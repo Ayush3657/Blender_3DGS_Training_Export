@@ -10,7 +10,7 @@ entire photogrammetry/SfM step. No COLMAP solve, no pose noise — the camera
 intrinsics, extrinsics, and the seed point cloud are written directly from the
 scene.
 
-> Designed for the archviz workflow: flat interiors rendered with a perfect
+> Designed for the archviz workflow: House interiors rendered with a perfect
 > pinhole camera (no lens distortion, no DoF, fixed exposure).
 
 ---
@@ -34,7 +34,7 @@ scene.
      transforms.json                # (optional) NeRF / Nerfstudio / instant-ngp
    ```
 
-3. Point this folder at LichtFeld Studio → train. (Or feed `transforms.json` to
+3. Point this folder at a 3DGS training tool like LichtFeld Studio → train. (Or feed `transforms.json` to
    Nerfstudio / instant-ngp.)
 
 ---
