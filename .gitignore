@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build artifact (rebuild with: Compress-Archive -Path .\blender_3dgs_export -DestinationPath .\blender_3dgs_export.zip -Force)
+blender_3dgs_export.zip
+
+# Blender
+*.blend1
+*.blend2
+
+# Example/generated datasets
+/gs_dataset/
+*_dataset/
+
+# Editor / tooling
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

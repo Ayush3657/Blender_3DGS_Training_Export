@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+
+# Unique identifier. Must match the package folder name when zipped as a subfolder.
+id = "blender_3dgs_export"
+version = "1.1.0"
+name = "3DGS Training Export (COLMAP)"
+tagline = "Export COLMAP datasets for Gaussian Splatting training"
+maintainer = "ASBL <content@asbl.in>"
+type = "add-on"
+
+# Categorisation in the extensions UI (values from Blender's approved add-on tag list).
+tags = ["Render", "Import-Export", "Pipeline"]
+
+# Targets Blender 5.0 and above (uses the 5.0 compositor data-block API for the
+# optional depth point-cloud mode; the code also falls back to the 4.x API).
+blender_version_min = "5.0.0"
+
+# Add-ons that use the bpy module must ship under a GPL-compatible license.
+license = ["SPDX:GPL-3.0-or-later"]
+
+copyright = ["2026 ASBL"]
+
+[permissions]
+files = "Write rendered images and the COLMAP dataset (cameras/images/points3D) to the chosen output folder"
