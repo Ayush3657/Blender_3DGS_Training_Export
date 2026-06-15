@@ -15,7 +15,7 @@ from bpy.props import (
 from bpy.types import Operator
 from mathutils import Vector
 
-from . import camera_utils, colmap_io, pointcloud, transforms_io
+from . import camera_utils, colmap_io, pointcloud, transforms_io, sampling
 
 CAM_COLLECTION_NAME = "3DGS_Cameras"
 IMAGE_EXT = {'PNG': '.png', 'JPEG': '.jpg'}
@@ -59,6 +59,17 @@ def _cameras_in_collection(coll):
     cams = [o for o in coll.all_objects if o.type == 'CAMERA']
     cams.sort(key=lambda o: o.name)
     return cams
+
+
+def _resolve_source_camera(context):
+    """The camera to sample: the active object if it's a camera, else the scene camera."""
+    obj = context.active_object
+    if obj is not None and obj.type == 'CAMERA':
+        return obj
+    cam = context.scene.camera
+    if cam is not None and cam.type == 'CAMERA':
+        return cam
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +213,156 @@ class GS_OT_add_camera_array(Operator):
         col = layout.column(align=True)
         col.prop(self, "clip_start")
         col.prop(self, "clip_end")
+
+
+# --------------------------------------------------------------------------- #
+# Walkthrough capture: prepare + bake cameras from an animated camera
+# --------------------------------------------------------------------------- #
+class GS_OT_prepare_walkthrough(Operator):
+    bl_idname = "gs_export.prepare_walkthrough"
+    bl_label = "Prepare Walkthrough"
+    bl_description = ("Make the active camera the scene camera, lock it to the viewport, "
+                     "and enable auto-keyframing so you can 'drive' a path with Walk navigation")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _resolve_source_camera(context) is not None
+
+    def execute(self, context):
+        scene = context.scene
+        cam = _resolve_source_camera(context)
+        if cam is None:
+            self.report({'ERROR'}, "Add a camera (or set a scene camera) first")
+            return {'CANCELLED'}
+
+        scene.camera = cam
+        locked = 0
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D' and hasattr(space, 'lock_camera'):
+                        space.lock_camera = True
+                        locked += 1
+        scene.tool_settings.use_keyframe_insert_auto = True
+
+        self.report(
+            {'INFO'},
+            "Locked '%s' to view + auto-key ON. Walk nav (Shift+`): fly to a spot, "
+            "press I > Location & Rotation to drop a waypoint, advance the frame, repeat. "
+            "Then run 'Bake Cameras from Animation'." % cam.name)
+        return {'FINISHED'}
+
+
+class GS_OT_bake_cameras_from_anim(Operator):
+    bl_idname = "gs_export.bake_cameras_from_anim"
+    bl_label = "Bake Cameras from Animation"
+    bl_description = ("Sample the active/scene camera over a frame range and create static "
+                      "cameras (matching pose + lens) in the export collection")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    frame_start: IntProperty(name="Start Frame", default=1)
+    frame_end: IntProperty(name="End Frame", default=250)
+    sampling_mode: EnumProperty(
+        name="Spacing",
+        items=[
+            ('EVEN_DISTANCE', "Even Distance",
+             "Evenly spaced by distance travelled (best for variable walking speed)"),
+            ('FRAME_STEP', "Every N Frames", "Sample one camera every N frames"),
+        ],
+        default='EVEN_DISTANCE',
+    )
+    frame_step: IntProperty(name="Frame Step", default=5, min=1, max=1000)
+    spacing: FloatProperty(name="Spacing", default=0.5, min=0.001, soft_max=10.0,
+                           subtype='DISTANCE')
+    match_intrinsics: BoolProperty(
+        name="Copy Focal Length", default=True,
+        description="Copy the source camera's (possibly animated) lens at each sampled frame")
+    clear_collection: BoolProperty(
+        name="Clear Collection First", default=False,
+        description="Remove existing cameras from the export collection before baking")
+
+    @classmethod
+    def poll(cls, context):
+        return _resolve_source_camera(context) is not None
+
+    def invoke(self, context, event):
+        self.frame_start = context.scene.frame_start
+        self.frame_end = context.scene.frame_end
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        layout = self.layout
+        src = _resolve_source_camera(context)
+        layout.label(text="Source: %s" % (src.name if src else "—"), icon='CON_CAMERASOLVER')
+        row = layout.row(align=True)
+        row.prop(self, "frame_start")
+        row.prop(self, "frame_end")
+        layout.prop(self, "sampling_mode")
+        layout.prop(self, "frame_step" if self.sampling_mode == 'FRAME_STEP' else "spacing")
+        layout.prop(self, "match_intrinsics")
+        layout.prop(self, "clear_collection")
+
+    def execute(self, context):
+        scene = context.scene
+        src = _resolve_source_camera(context)
+        if src is None:
+            self.report({'ERROR'}, "No active or scene camera to sample")
+            return {'CANCELLED'}
+
+        props = scene.gs_export
+        coll = _get_or_create_collection(context, props)
+
+        if self.clear_collection:
+            for o in list(coll.objects):
+                if o.type == 'CAMERA':
+                    bpy.data.objects.remove(o, do_unlink=True)
+
+        frames = sampling.frame_step_list(self.frame_start, self.frame_end, 1)
+        orig_frame = scene.frame_current
+        made = 0
+        try:
+            if self.sampling_mode == 'FRAME_STEP':
+                sel_frames = sampling.frame_step_list(self.frame_start, self.frame_end,
+                                                      self.frame_step)
+            else:
+                positions = []
+                for f in frames:
+                    scene.frame_set(f)
+                    dg = context.evaluated_depsgraph_get()
+                    loc = src.evaluated_get(dg).matrix_world.translation
+                    positions.append((loc.x, loc.y, loc.z))
+                idx = sampling.resample_indices_by_distance(positions, self.spacing)
+                sel_frames = [frames[i] for i in idx]
+
+            for f in sel_frames:
+                scene.frame_set(f)
+                dg = context.evaluated_depsgraph_get()
+                ev = src.evaluated_get(dg)
+                matrix = ev.matrix_world.copy()
+
+                name = "Scan_%04d" % f
+                cam_data = bpy.data.cameras.new(name)
+                sd = src.data
+                cam_data.sensor_width = sd.sensor_width
+                cam_data.sensor_height = sd.sensor_height
+                cam_data.sensor_fit = sd.sensor_fit
+                cam_data.shift_x = sd.shift_x
+                cam_data.shift_y = sd.shift_y
+                cam_data.clip_start = sd.clip_start
+                cam_data.clip_end = sd.clip_end
+                cam_data.lens = ev.data.lens if self.match_intrinsics else sd.lens
+
+                obj = bpy.data.objects.new(name, cam_data)
+                coll.objects.link(obj)
+                obj.matrix_world = matrix
+                made += 1
+        finally:
+            scene.frame_set(orig_frame)
+
+        self.report({'INFO'}, "Baked %d camera(s) from '%s' into '%s'"
+                    % (made, src.name, coll.name))
+        return {'FINISHED'}
 
 
 # --------------------------------------------------------------------------- #
@@ -545,7 +706,13 @@ class GS_OT_export_cameras_only(Operator):
         return bpy.ops.gs_export.render_export(render=False)
 
 
-classes = (GS_OT_add_camera_array, GS_OT_render_export, GS_OT_export_cameras_only)
+classes = (
+    GS_OT_add_camera_array,
+    GS_OT_prepare_walkthrough,
+    GS_OT_bake_cameras_from_anim,
+    GS_OT_render_export,
+    GS_OT_export_cameras_only,
+)
 
 
 def register():

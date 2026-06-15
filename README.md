@@ -17,8 +17,9 @@ scene.
 
 ## What it does
 
-1. **Add Camera Array** — drop a grid / line / arc / dome of cameras into a
-   dedicated collection, then nudge them into place by hand.
+1. **Get cameras into a collection**, either by dropping a grid / line / arc /
+   dome with **Add Camera Array**, or by **walking the space like a phone scan**
+   and baking the path into cameras (see *Walkthrough capture* below).
 2. **Render & Export** — renders every camera in that collection with your
    current render settings and writes a COLMAP dataset:
 
@@ -80,12 +81,43 @@ inside Blender.
 ## Usage
 
 ### 1. Place cameras
-- **Cameras** panel → **Add Camera Array**. Choose a pattern (the dialog centers
-  it on the 3D cursor by default), set count/spacing/radius, and optionally aim
-  them at the center.
-- Cameras land in the **`3DGS_Cameras`** collection. Move/rotate/duplicate them
-  freely, or add your own — anything in that collection gets exported.
-- The panel shows the live camera count.
+
+You have two ways to get cameras into the **`3DGS_Cameras`** collection (anything
+in that collection is what gets exported):
+
+**a) Add Camera Array** — *Cameras* panel → **Add Camera Array**. Pick a pattern
+(grid / line / arc / dome, centered on the 3D cursor), set count/spacing/radius,
+optionally aim at the center. Good for object-centric or regular layouts.
+
+**b) Walkthrough capture** *(recommended for cluttered interiors)* — drive the
+camera through the space like a phone scan, then bake the path into cameras. This
+avoids the tedious clip-checking of manual placement because *you* steer the
+camera through open space:
+
+1. *Capture* panel → **Prepare Walkthrough**. This makes the active camera the
+   scene camera, locks it to the viewport, and turns on auto-keyframing.
+2. Enter **Walk navigation** (`Shift + \``), fly to a spot (WASD + mouse), and
+   press **I → Location & Rotation** to drop a waypoint keyframe. Advance the
+   frame a bit, fly to the next spot, drop another. Blender smooths a path
+   between your waypoints. (A *Follow Path* curve or any other camera animation
+   works too — anything that animates the camera.)
+3. *Capture* panel → **Bake Cameras from Animation**:
+   - **Even Distance** *(default)* — one camera every *N* metres of travel.
+     Prefer this: if you pause or speed up, time-based sampling would clump
+     cameras where you lingered and leave gaps where you moved fast; distance
+     spacing keeps coverage even.
+   - **Every N Frames** — simple time-based sampling.
+   - Each baked camera copies the source pose (and lens, if *Copy Focal Length*
+     is on) at that frame, named `Scan_<frame>`.
+4. **Prune**: delete any baked cameras that ended up clipping or redundant, nudge
+   others — then render. Because they're normal cameras in the collection, the
+   rest of the pipeline is unchanged.
+
+The *Cameras* panel shows the live camera count for whichever method you use.
+
+> Tip — to cover walls you'd otherwise miss, do a couple of passes (e.g. one
+> facing forward down the room, one panning along each wall), or sweep the view
+> side-to-side as you walk, just like scanning with a phone.
 
 ### 2. Choose the point cloud
 **Point Cloud** panel:
@@ -190,6 +222,7 @@ python tests/test_colmap_io.py     # bin/txt round-trip vs a reference COLMAP re
 python tests/test_camera_math.py   # intrinsics + extrinsics invariants
 python tests/test_geometry.py      # depth unprojection + surface sampling
 python tests/test_transforms.py    # transforms.json + COLMAP/NeRF pose consistency
+python tests/test_sampling.py      # walkthrough arc-length / frame-step resampling
 ```
 
 ---

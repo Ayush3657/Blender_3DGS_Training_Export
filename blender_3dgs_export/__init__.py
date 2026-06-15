@@ -8,7 +8,7 @@ export camera poses + an initial point cloud in COLMAP format, ready to train
 bl_info = {
     "name": "3DGS Training Export (COLMAP)",
     "author": "ASBL",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (3, 3, 0),
     "location": "View3D > Sidebar (N) > 3DGS Export",
     "description": "Render cameras and export a COLMAP dataset for Gaussian Splatting training",
@@ -19,7 +19,7 @@ bl_info = {
 if "bpy" in locals():
     import importlib
     for _m in ("camera_utils", "colmap_io", "pointcloud", "transforms_io",
-               "properties", "operators", "panels"):
+               "sampling", "properties", "operators", "panels"):
         if _m in locals():
             importlib.reload(locals()[_m])
 
@@ -29,6 +29,7 @@ from . import camera_utils  # noqa: F401,E402  (pure logic, no register)
 from . import colmap_io      # noqa: F401,E402
 from . import pointcloud     # noqa: F401,E402
 from . import transforms_io  # noqa: F401,E402
+from . import sampling       # noqa: F401,E402
 from . import properties     # noqa: E402
 from . import operators      # noqa: E402
 from . import panels         # noqa: E402

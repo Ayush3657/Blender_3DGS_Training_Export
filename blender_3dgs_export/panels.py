@@ -31,6 +31,18 @@ class GS_PT_cameras(GS_PT_base, Panel):
             box.label(text=f"{len(cams)} camera(s) to export", icon='CAMERA_DATA')
 
 
+class GS_PT_capture(GS_PT_base, Panel):
+    bl_idname = "GS_PT_capture"
+    bl_label = "Capture (Walkthrough)"
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        col.operator("gs_export.prepare_walkthrough", icon='CAMERA_DATA')
+        col.operator("gs_export.bake_cameras_from_anim", icon='TRACKING')
+        layout.label(text="Drive a path, then bake to cameras", icon='INFO')
+
+
 class GS_PT_pointcloud(GS_PT_base, Panel):
     bl_idname = "GS_PT_pointcloud"
     bl_label = "Point Cloud"
@@ -79,7 +91,7 @@ class GS_PT_output(GS_PT_base, Panel):
         layout.operator("gs_export.export_cameras_only", icon='EXPORT')
 
 
-classes = (GS_PT_cameras, GS_PT_pointcloud, GS_PT_output)
+classes = (GS_PT_cameras, GS_PT_capture, GS_PT_pointcloud, GS_PT_output)
 
 
 def register():
