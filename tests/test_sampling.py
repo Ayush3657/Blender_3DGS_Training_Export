@@ -48,4 +48,33 @@ big = sampling.resample_indices_by_distance(line, 0.01)
 assert len(big) <= len(line) and max(big) == 10
 print("degenerate cases (empty / single / stationary / tiny spacing): OK")
 
+# --- motion sampler: STAND STILL AND PAN (the user's case) ---
+import math as _m
+N = 20
+still = np.zeros((N, 3))                                  # camera never moves
+angs = np.linspace(0.0, _m.pi, N)                         # view pans 0..180 deg
+fwd = np.stack([np.cos(angs), np.sin(angs), np.zeros(N)], axis=1)
+# distance disabled (0), rotation every 30 deg -> must produce interior samples
+idx = sampling.resample_indices_by_motion(still, fwd, 0.0, _m.radians(30))
+assert idx[0] == 0 and idx[-1] == N - 1
+assert len(idx) >= 5, ("rotation in place should still create cameras", idx)
+# pure distance sampling would give only one sample here:
+assert sampling.resample_indices_by_distance(still, 0.5) == [0]
+print(f"stand-still-and-pan: distance->1 sample, motion(30deg)->{len(idx)} samples: OK")
+
+# --- motion sampler: move straight, no rotation -> distance trigger only ---
+line2 = np.stack([np.arange(11.0), np.zeros(11), np.zeros(11)], axis=1)
+fwd_const = np.tile([0.0, -1.0, 0.0], (11, 1))
+idxm = sampling.resample_indices_by_motion(line2, fwd_const, 2.5, _m.radians(30))
+assert idxm[0] == 0 and idxm[-1] == 10
+gapsm = np.diff(line2[idxm][:, 0])
+assert gapsm.max() <= 3.0, (idxm, gapsm)
+print(f"motion sampler, translation only: indices={idxm}: OK")
+
+# --- both triggers disabled -> endpoints only; empty/single ---
+assert sampling.resample_indices_by_motion(line2, fwd_const, 0.0, 0.0) == [0, 10]
+assert sampling.resample_indices_by_motion([], [], 0.5, 0.5) == []
+assert sampling.resample_indices_by_motion([[0, 0, 0]], [[0, 0, -1]], 0.5, 0.5) == [0]
+print("motion sampler degenerate cases: OK")
+
 print("\nALL SAMPLING TESTS PASSED")

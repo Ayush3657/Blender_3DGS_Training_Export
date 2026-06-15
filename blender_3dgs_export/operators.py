@@ -266,15 +266,21 @@ class GS_OT_bake_cameras_from_anim(Operator):
     sampling_mode: EnumProperty(
         name="Spacing",
         items=[
-            ('EVEN_DISTANCE', "Even Distance",
-             "Evenly spaced by distance travelled (best for variable walking speed)"),
+            ('EVEN_COVERAGE', "Even Coverage",
+             "Drop a camera whenever you've moved far enough OR turned far enough — "
+             "captures standing still and panning, and avoids clumping at variable speed"),
             ('FRAME_STEP', "Every N Frames", "Sample one camera every N frames"),
         ],
-        default='EVEN_DISTANCE',
+        default='EVEN_COVERAGE',
     )
     frame_step: IntProperty(name="Frame Step", default=5, min=1, max=1000)
-    spacing: FloatProperty(name="Spacing", default=0.5, min=0.001, soft_max=10.0,
-                           subtype='DISTANCE')
+    spacing: FloatProperty(
+        name="Distance", default=0.5, min=0.0, soft_max=10.0, subtype='DISTANCE',
+        description="New camera after this much travel (0 = ignore distance, use rotation only)")
+    angle_spacing: FloatProperty(
+        name="Rotation (°)", default=30.0, min=0.0, soft_max=180.0,
+        description="New camera after the view turns this many degrees — captures "
+                    "panning in place (0 = ignore rotation, use distance only)")
     match_intrinsics: BoolProperty(
         name="Copy Focal Length", default=True,
         description="Copy the source camera's (possibly animated) lens at each sampled frame")
@@ -299,7 +305,12 @@ class GS_OT_bake_cameras_from_anim(Operator):
         row.prop(self, "frame_start")
         row.prop(self, "frame_end")
         layout.prop(self, "sampling_mode")
-        layout.prop(self, "frame_step" if self.sampling_mode == 'FRAME_STEP' else "spacing")
+        if self.sampling_mode == 'FRAME_STEP':
+            layout.prop(self, "frame_step")
+        else:
+            col = layout.column(align=True)
+            col.prop(self, "spacing")
+            col.prop(self, "angle_spacing")
         layout.prop(self, "match_intrinsics")
         layout.prop(self, "clear_collection")
 
@@ -326,13 +337,17 @@ class GS_OT_bake_cameras_from_anim(Operator):
                 sel_frames = sampling.frame_step_list(self.frame_start, self.frame_end,
                                                       self.frame_step)
             else:
-                positions = []
+                positions, forwards = [], []
                 for f in frames:
                     scene.frame_set(f)
                     dg = context.evaluated_depsgraph_get()
-                    loc = src.evaluated_get(dg).matrix_world.translation
+                    mw = src.evaluated_get(dg).matrix_world
+                    loc = mw.translation
+                    fwd = (mw.to_3x3() @ Vector((0.0, 0.0, -1.0)))  # camera view dir
                     positions.append((loc.x, loc.y, loc.z))
-                idx = sampling.resample_indices_by_distance(positions, self.spacing)
+                    forwards.append((fwd.x, fwd.y, fwd.z))
+                idx = sampling.resample_indices_by_motion(
+                    positions, forwards, self.spacing, math.radians(self.angle_spacing))
                 sel_frames = [frames[i] for i in idx]
 
             for f in sel_frames:
@@ -394,118 +409,229 @@ class GS_OT_render_export(Operator):
             self.report({'ERROR'}, "No cameras found. Assign a camera collection or use 'Add Camera Array'")
             return {'CANCELLED'}
 
-        images_dir = os.path.join(out, "images")
-        sparse_dir = os.path.join(out, "sparse", "0")
-        os.makedirs(images_dir, exist_ok=True)
-        os.makedirs(sparse_dir, exist_ok=True)
+        self.out = out
+        self.images_dir = os.path.join(out, "images")
+        self.sparse_dir = os.path.join(out, "sparse", "0")
+        os.makedirs(self.images_dir, exist_ok=True)
+        os.makedirs(self.sparse_dir, exist_ok=True)
 
-        do_render = self.render
-        depth_mode = (props.pc_mode == 'DEPTH') and do_render
-        ext = IMAGE_EXT[props.image_format]
+        self.scene = scene
+        self.props = props
+        self.cams = cams
+        self.do_render = self.render
+        self.depth_mode = (props.pc_mode == 'DEPTH') and self.do_render
+        self.restore = {}
+        self.depth_state = None
+        self.tmp_depth_dir = None
+        self.frame = scene.frame_current
 
-        restore = {}
-        depth_state = None
-        tmp_depth_dir = None
-        wm = context.window_manager
         try:
-            if do_render:
-                restore = self._apply_render_settings(scene, props, cams)
-            if depth_mode:
-                tmp_depth_dir = tempfile.mkdtemp(prefix="gs_depth_")
-                depth_state = self._setup_depth_nodes(scene, context.view_layer, tmp_depth_dir)
+            if self.do_render:
+                self.restore = self._apply_render_settings(scene, props, cams)
+            if self.depth_mode:
+                self.tmp_depth_dir = tempfile.mkdtemp(prefix="gs_depth_")
+                self.depth_state = self._setup_depth_nodes(scene, context.view_layer,
+                                                           self.tmp_depth_dir)
+            self._precompute(context)
+        except Exception as exc:                       # noqa: BLE001
+            self._cleanup(context)
+            self.report({'ERROR'}, "Setup failed: %s" % exc)
+            return {'CANCELLED'}
 
-            cameras_out = []          # COLMAP camera intrinsics (deduplicated)
-            images_out = []           # COLMAP image poses
-            frames_out = []           # transforms.json frames
-            cam_records = []          # for depth back-projection
-            intr_to_id = {}
-            used_names = set()
-            frame = scene.frame_current
+        # Export-only (no render): write immediately, synchronously.
+        if not self.do_render:
+            self._write_outputs(context, len(self.images_out))
+            self._cleanup(context)
+            return self._report_done()
 
-            wm.progress_begin(0, len(cams))
-            for i, cam in enumerate(cams):
-                wm.progress_update(i)
-                scene.camera = cam
+        # Headless / no window: fall back to a blocking render loop.
+        if context.window is None:
+            return self._run_blocking(context)
 
-                w, h, fx, fy, cx, cy = camera_utils.compute_intrinsics(cam.data, scene.render)
-                key = (w, h, round(fx, 4), round(fy, 4), round(cx, 4), round(cy, 4))
-                if key not in intr_to_id:
-                    cam_id = len(cameras_out) + 1
-                    intr_to_id[key] = cam_id
-                    cameras_out.append({
-                        'id': cam_id, 'model': 'PINHOLE', 'width': w, 'height': h,
-                        'params': [fx, fy, cx, cy],
-                    })
-                cam_id = intr_to_id[key]
+        # Interactive: render modally so the render view shows live and the UI
+        # stays responsive (Esc cancels). Each frame is launched with
+        # 'INVOKE_DEFAULT' so it runs as a job rather than blocking the main thread.
+        self.index = 0
+        self.rendering = False
+        self.stop = False
+        self._timer = None
+        self._add_handlers()
+        self._timer = context.window_manager.event_timer_add(0.25, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        self._set_status(context, "3DGS: starting render…")
+        return {'RUNNING_MODAL'}
 
-                stem = _sanitize(cam.name)
-                base = stem
-                n = 1
-                while stem in used_names:
-                    stem = f"{base}_{n}"
-                    n += 1
-                used_names.add(stem)
-                image_name = stem + ext
-                image_path = os.path.join(images_dir, image_name)
+    # --- precompute per-camera metadata (independent of rendering) -----------
+    def _precompute(self, context):
+        scene, props = self.scene, self.props
+        ext = IMAGE_EXT[props.image_format]
+        self.cameras_out, self.images_out, self.frames_out = [], [], []
+        self.cam_records, self.render_items = [], []
+        intr_to_id, used_names = {}, set()
 
-                if do_render:
-                    scene.render.filepath = os.path.join(images_dir, stem)
-                    if depth_mode:
-                        depth_state['fout'].file_slots[0].path = f"{stem}_depth_"
-                    print(f"[3DGS] Rendering {i + 1}/{len(cams)}: {image_name}")
-                    bpy.ops.render.render(write_still=True)
+        for i, cam in enumerate(self.cams):
+            w, h, fx, fy, cx, cy = camera_utils.compute_intrinsics(cam.data, scene.render)
+            key = (w, h, round(fx, 4), round(fy, 4), round(cx, 4), round(cy, 4))
+            if key not in intr_to_id:
+                cam_id = len(self.cameras_out) + 1
+                intr_to_id[key] = cam_id
+                self.cameras_out.append({'id': cam_id, 'model': 'PINHOLE',
+                                         'width': w, 'height': h,
+                                         'params': [fx, fy, cx, cy]})
+            cam_id = intr_to_id[key]
 
-                qvec, tvec, R_np, t_np = camera_utils.get_extrinsics(cam)
-                images_out.append({
-                    'id': i + 1, 'qvec': qvec, 'tvec': tvec,
-                    'camera_id': cam_id, 'name': image_name,
-                })
+            stem = _sanitize(cam.name)
+            base, n = stem, 1
+            while stem in used_names:
+                stem = f"{base}_{n}"
+                n += 1
+            used_names.add(stem)
+            image_name = stem + ext
 
-                # transforms.json: camera-to-world = Blender matrix_world (OpenGL frame).
-                frames_out.append({
-                    'file_path': "images/" + image_name,
-                    'transform_matrix': [[float(v) for v in row] for row in cam.matrix_world],
-                    'w': w, 'h': h, 'fl_x': fx, 'fl_y': fy, 'cx': cx, 'cy': cy,
-                })
+            self.render_items.append({'stem': stem,
+                                      'filepath': os.path.join(self.images_dir, stem)})
+            qvec, tvec, R_np, t_np = camera_utils.get_extrinsics(cam)
+            self.images_out.append({'id': i + 1, 'qvec': qvec, 'tvec': tvec,
+                                    'camera_id': cam_id, 'name': image_name})
+            self.frames_out.append({
+                'file_path': "images/" + image_name,
+                'transform_matrix': [[float(v) for v in row] for row in cam.matrix_world],
+                'w': w, 'h': h, 'fl_x': fx, 'fl_y': fy, 'cx': cx, 'cy': cy})
+            self.cam_records.append({
+                'depth_path': (os.path.join(self.tmp_depth_dir, f"{stem}_depth_{self.frame:04d}.exr")
+                               if self.depth_mode else None),
+                'image_path': os.path.join(self.images_dir, image_name),
+                'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'R': R_np, 't': t_np})
 
-                if depth_mode:
-                    depth_path = os.path.join(tmp_depth_dir, f"{stem}_depth_{frame:04d}.exr")
-                    cam_records.append({
-                        'depth_path': depth_path, 'image_path': image_path,
-                        'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'R': R_np, 't': t_np,
-                    })
-            wm.progress_end()
+    # --- modal driver --------------------------------------------------------
+    def modal(self, context, event):
+        if event.type == 'ESC' and event.value == 'PRESS':
+            self.stop = True
+        if event.type == 'TIMER':
+            if (self.stop or self.index >= len(self.cams)) and not self.rendering:
+                return self._end(context, cancelled=self.stop)
+            if not self.rendering and self.index < len(self.cams):
+                self._render_next(context)
+        return {'PASS_THROUGH'}
 
-            # ---- Point cloud ----
-            xyz, rgb = self._build_point_cloud(context, props, cam_records)
-            print(f"[3DGS] Point cloud: {len(xyz)} points ({props.pc_mode})")
+    def _render_next(self, context):
+        item = self.render_items[self.index]
+        self.scene.camera = self.cams[self.index]
+        self.scene.render.filepath = item['filepath']
+        if self.depth_mode:
+            self.depth_state['fout'].file_slots[0].path = "%s_depth_" % item['stem']
+        self._set_status(context, "3DGS: rendering %d/%d — %s   (Esc to stop)"
+                         % (self.index + 1, len(self.cams), item['stem']))
+        print("[3DGS] Rendering %d/%d: %s" % (self.index + 1, len(self.cams), item['stem']))
+        bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)
 
-            # ---- Write COLMAP model ----
-            colmap_io.write_model(sparse_dir, cameras_out, images_out, xyz, rgb,
-                                  fmt=props.colmap_format)
-            if props.write_ply:
-                colmap_io.write_points_ply(os.path.join(sparse_dir, "points3D.ply"), xyz, rgb)
+    # render handlers (bound methods; receive (scene, depsgraph) on modern Blender)
+    def _on_render_pre(self, *args):
+        self.rendering = True
 
-            # ---- Optional transforms.json (NeRF / Nerfstudio / instant-ngp) ----
-            if props.write_transforms_json and frames_out:
-                ply_ref = "sparse/0/points3D.ply" if props.write_ply else None
-                transforms_io.write_transforms(os.path.join(out, "transforms.json"),
-                                               frames_out, ply_path=ply_ref)
-                print(f"[3DGS] Wrote transforms.json ({len(frames_out)} frames)")
+    def _on_render_complete(self, *args):
+        self.index += 1
+        self.rendering = False
 
+    def _on_render_cancel(self, *args):
+        self.rendering = False
+        self.stop = True
+
+    def _add_handlers(self):
+        h = bpy.app.handlers
+        h.render_pre.append(self._on_render_pre)
+        h.render_complete.append(self._on_render_complete)
+        h.render_cancel.append(self._on_render_cancel)
+        self._handlers_added = True
+
+    def _remove_handlers(self):
+        if not getattr(self, '_handlers_added', False):
+            return
+        h = bpy.app.handlers
+        for lst, fn in ((h.render_pre, self._on_render_pre),
+                        (h.render_complete, self._on_render_complete),
+                        (h.render_cancel, self._on_render_cancel)):
+            if fn in lst:
+                lst.remove(fn)
+        self._handlers_added = False
+
+    def _end(self, context, cancelled):
+        rendered = self.index
+        if getattr(self, '_timer', None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        self._remove_handlers()
+        try:
+            self._write_outputs(context, rendered)
         finally:
-            if depth_state is not None:
-                self._teardown_depth_nodes(scene, context.view_layer, depth_state)
-            if tmp_depth_dir and os.path.isdir(tmp_depth_dir):
-                shutil.rmtree(tmp_depth_dir, ignore_errors=True)
-            if restore:
-                self._restore_render_settings(scene, restore)
+            self._cleanup(context)
+        self._set_status(context, None)
+        if cancelled:
+            self.report({'WARNING'}, "Cancelled — wrote partial dataset (%d/%d views)"
+                        % (rendered, len(self.cams)))
+            return {'CANCELLED'}
+        return self._report_done()
 
-        msg = (f"Exported {len(images_out)} views, {len(cameras_out)} intrinsic(s), "
-               f"{len(xyz)} points -> {out}")
+    # --- blocking fallback (headless only) -----------------------------------
+    def _run_blocking(self, context):
+        try:
+            for i, item in enumerate(self.render_items):
+                self.scene.camera = self.cams[i]
+                self.scene.render.filepath = item['filepath']
+                if self.depth_mode:
+                    self.depth_state['fout'].file_slots[0].path = "%s_depth_" % item['stem']
+                print("[3DGS] Rendering %d/%d: %s" % (i + 1, len(self.cams), item['stem']))
+                bpy.ops.render.render(write_still=True)
+            self._write_outputs(context, len(self.render_items))
+        finally:
+            self._cleanup(context)
+        return self._report_done()
+
+    # --- outputs + cleanup ---------------------------------------------------
+    def _write_outputs(self, context, rendered):
+        images = self.images_out[:rendered]
+        frames = self.frames_out[:rendered]
+        records = self.cam_records[:rendered]
+        xyz, rgb = self._build_point_cloud(context, self.props, records)
+        print("[3DGS] Point cloud: %d points (%s)" % (len(xyz), self.props.pc_mode))
+
+        used_ids = {im['camera_id'] for im in images}
+        cams_out = [c for c in self.cameras_out if c['id'] in used_ids] or self.cameras_out
+        colmap_io.write_model(self.sparse_dir, cams_out, images, xyz, rgb,
+                              fmt=self.props.colmap_format)
+        if self.props.write_ply:
+            colmap_io.write_points_ply(os.path.join(self.sparse_dir, "points3D.ply"), xyz, rgb)
+        if self.props.write_transforms_json and frames:
+            ply_ref = "sparse/0/points3D.ply" if self.props.write_ply else None
+            transforms_io.write_transforms(os.path.join(self.out, "transforms.json"),
+                                           frames, ply_path=ply_ref)
+            print("[3DGS] Wrote transforms.json (%d frames)" % len(frames))
+        self._counts = (len(images), len(cams_out), len(xyz))
+
+    def _cleanup(self, context):
+        if self.depth_state is not None:
+            self._teardown_depth_nodes(self.scene, context.view_layer, self.depth_state)
+            self.depth_state = None
+        if self.tmp_depth_dir and os.path.isdir(self.tmp_depth_dir):
+            shutil.rmtree(self.tmp_depth_dir, ignore_errors=True)
+            self.tmp_depth_dir = None
+        if self.restore:
+            self._restore_render_settings(self.scene, self.restore)
+            self.restore = {}
+
+    def _report_done(self):
+        v, c, p = getattr(self, '_counts', (0, 0, 0))
+        msg = "Exported %d views, %d intrinsic(s), %d points -> %s" % (v, c, p, self.out)
         self.report({'INFO'}, msg)
-        print(f"[3DGS] {msg}")
+        print("[3DGS] %s" % msg)
         return {'FINISHED'}
+
+    @staticmethod
+    def _set_status(context, text):
+        try:
+            context.workspace.status_text_set(text)
+        except Exception:
+            pass
 
     # --- render settings snapshot / restore ---------------------------------
     def _apply_render_settings(self, scene, props, cams):

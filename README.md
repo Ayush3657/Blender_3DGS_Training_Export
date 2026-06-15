@@ -102,10 +102,13 @@ camera through open space:
    between your waypoints. (A *Follow Path* curve or any other camera animation
    works too — anything that animates the camera.)
 3. *Capture* panel → **Bake Cameras from Animation**:
-   - **Even Distance** *(default)* — one camera every *N* metres of travel.
-     Prefer this: if you pause or speed up, time-based sampling would clump
-     cameras where you lingered and leave gaps where you moved fast; distance
-     spacing keeps coverage even.
+   - **Even Coverage** *(default)* — drops a camera whenever you've **moved** ≥
+     the *Distance* threshold **or turned** ≥ the *Rotation* threshold (degrees).
+     The rotation trigger is what makes "stand in one spot and pan to face a
+     different wall" produce cameras — pure distance spacing would skip it since
+     you didn't move. It also avoids the clumping you'd get sampling by frame
+     number when you pause or change speed. Set *Distance* to 0 to sample purely
+     on rotation, or *Rotation* to 0 to sample purely on travel.
    - **Every N Frames** — simple time-based sampling.
    - Each baked camera copies the source pose (and lens, if *Copy Focal Length*
      is on) at that frame, named `Scan_<frame>`.
@@ -142,7 +145,10 @@ The *Cameras* panel shows the live camera count for whichever method you use.
   `transforms.json` at the dataset root next to the COLMAP model (see below).
 - **Disable Depth of Field / Motion Blur** — on by default; both break multi-view
   consistency. They're toggled only for the export and restored afterward.
-- Hit **Render & Export Dataset**.
+- Hit **Render & Export Dataset**. Frames render one by one in the **render view**
+  (per your *Render Display* preference), the status bar shows progress, and the
+  UI stays responsive — press **Esc** to stop early (a partial dataset is still
+  written for the frames completed so far).
 
 Already rendered? Use **Export Cameras Only** to (re)write the COLMAP model and
 point cloud without re-rendering.
