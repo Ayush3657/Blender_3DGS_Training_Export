@@ -86,6 +86,24 @@ def resample_indices_by_distance(positions, spacing):
     return sorted(set(idx.tolist()) | {0, n - 1})
 
 
+def region_bounds_from_centers(centers, padding):
+    """Axis-aligned bounds enclosing the camera centers, expanded per axis by
+    max(padding, the camera-box extent on that axis).
+
+    Used to limit point-cloud sampling to the region the cameras actually occupy,
+    so stray/far geometry elsewhere in the scene doesn't dominate (or blow the
+    cloud out to infinity). Returns (lo, hi) numpy arrays, or None if no centers.
+    """
+    c = np.asarray(centers, dtype=float)
+    if c.size == 0:
+        return None
+    lo = c.min(axis=0)
+    hi = c.max(axis=0)
+    ext = hi - lo
+    pad = np.maximum(float(padding), ext)
+    return lo - pad, hi + pad
+
+
 def frame_step_list(frame_start, frame_end, step):
     """Frames from start to end (inclusive) every `step`, always including the end."""
     if frame_end < frame_start:

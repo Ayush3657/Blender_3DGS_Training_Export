@@ -55,6 +55,10 @@ class GS_PT_pointcloud(GS_PT_base, Panel):
             layout.prop(props, "pc_source")
         if props.pc_mode != 'NONE':
             layout.prop(props, "pc_num_points")
+        if props.pc_mode in {'SURFACE', 'RANDOM'}:
+            layout.prop(props, "pc_limit_to_cameras")
+            if props.pc_limit_to_cameras:
+                layout.prop(props, "pc_region_padding")
         if props.pc_mode == 'DEPTH':
             layout.label(text="Experimental: renders a depth pass", icon='ERROR')
         layout.prop(props, "write_ply")

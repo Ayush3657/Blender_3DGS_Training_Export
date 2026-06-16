@@ -77,4 +77,22 @@ assert sampling.resample_indices_by_motion([], [], 0.5, 0.5) == []
 assert sampling.resample_indices_by_motion([[0, 0, 0]], [[0, 0, -1]], 0.5, 0.5) == [0]
 print("motion sampler degenerate cases: OK")
 
+# --- region_bounds_from_centers (camera-region limiting) ---
+# Cameras in a small room near origin; bounds must exclude far-away geometry.
+cam_centers = np.array([[-0.7, 0.26, 0.33], [2.19, 5.73, 3.0], [0.9, 2.6, 1.6]])
+lo, hi = sampling.region_bounds_from_centers(cam_centers, 2.0)
+# extent ~ [2.89, 5.47, 2.67]; pad = max(2.0, extent) -> expands by >= extent
+assert (lo < cam_centers.min(0)).all() and (hi > cam_centers.max(0)).all()
+# a far point like the bad export (224534, 65032, -59076) must be OUTSIDE
+far = np.array([224534.0, 65032.0, -59076.0])
+assert not (np.all(far >= lo) and np.all(far <= hi)), "far junk must be excluded"
+# the room itself (a few metres around the cameras) must be INSIDE
+room_pt = np.array([1.0, 3.0, 0.0])  # floor under the walk
+assert np.all(room_pt >= lo) and np.all(room_pt <= hi), (lo, hi)
+# padding floor: tiny camera spread still expands by at least `padding`
+lo2, hi2 = sampling.region_bounds_from_centers(np.array([[0., 0, 0], [0.1, 0, 0]]), 2.0)
+assert lo2[1] <= -2.0 and hi2[1] >= 2.0
+assert sampling.region_bounds_from_centers([], 2.0) is None
+print(f"region_bounds_from_centers: room in, far junk out  (lo={np.round(lo,2)}, hi={np.round(hi,2)}): OK")
+
 print("\nALL SAMPLING TESTS PASSED")

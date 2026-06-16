@@ -48,11 +48,20 @@ def _empty():
 # --------------------------------------------------------------------------- #
 # Mesh-surface sampling
 # --------------------------------------------------------------------------- #
-def sample_surface(context, n_points, objects, rng=None):
-    """Area-weighted surface sampling across the given mesh objects."""
+def sample_surface(context, n_points, objects, rng=None, bounds=None):
+    """Area-weighted surface sampling across the given mesh objects.
+
+    If `bounds` (lo, hi) is given, only triangles whose centroid falls inside the
+    box are sampled (and any stray sampled point outside the box is dropped), so
+    far/huge geometry elsewhere in the scene can't dominate the cloud.
+    """
     if rng is None:
         rng = np.random.default_rng()
     deps = context.evaluated_depsgraph_get()
+    lo = hi = None
+    if bounds is not None:
+        lo = np.asarray(bounds[0], dtype=np.float64)
+        hi = np.asarray(bounds[1], dtype=np.float64)
 
     v0_list, v1_list, v2_list, col_list = [], [], [], []
 
@@ -91,9 +100,9 @@ def sample_surface(context, n_points, objects, rng=None):
             M = np.array(obj.matrix_world, dtype=np.float64)
             co_w = co @ M[:3, :3].T + M[:3, 3]
 
-            v0_list.append(co_w[tri[:, 0]])
-            v1_list.append(co_w[tri[:, 1]])
-            v2_list.append(co_w[tri[:, 2]])
+            t0 = co_w[tri[:, 0]]
+            t1 = co_w[tri[:, 1]]
+            t2 = co_w[tri[:, 2]]
 
             slots = obj.material_slots
             if len(slots) > 0:
@@ -102,7 +111,20 @@ def sample_surface(context, n_points, objects, rng=None):
             else:
                 cols = np.array([[0.8, 0.8, 0.8]], dtype=np.float64)
             mat_idx = np.clip(mat_idx, 0, len(cols) - 1)
-            col_list.append(cols[mat_idx])
+            tcol = cols[mat_idx]
+
+            # Keep only triangles whose centroid is inside the camera region.
+            if lo is not None:
+                cent = (t0 + t1 + t2) / 3.0
+                m = np.all((cent >= lo) & (cent <= hi), axis=1)
+                if not m.any():
+                    continue
+                t0, t1, t2, tcol = t0[m], t1[m], t2[m], tcol[m]
+
+            v0_list.append(t0)
+            v1_list.append(t1)
+            v2_list.append(t2)
+            col_list.append(tcol)
         finally:
             obj_eval.to_mesh_clear()
 
@@ -130,17 +152,32 @@ def sample_surface(context, n_points, objects, rng=None):
     b1 = (su1 * (1.0 - u2))[:, None]
     b2 = (su1 * u2)[:, None]
     pts = b0 * v0[idx] + b1 * v1[idx] + b2 * v2[idx]
+    col = tri_col[idx]
 
-    rgb = (_lin2srgb(tri_col[idx]) * 255.0).round().clip(0, 255).astype(np.uint8)
+    # Drop any stray samples outside the region (e.g. from huge straddling tris).
+    if lo is not None:
+        m = np.all((pts >= lo) & (pts <= hi), axis=1)
+        pts, col = pts[m], col[m]
+
+    rgb = (_lin2srgb(col) * 255.0).round().clip(0, 255).astype(np.uint8)
     return pts, rgb
 
 
 # --------------------------------------------------------------------------- #
 # Random fallback
 # --------------------------------------------------------------------------- #
-def sample_random(context, n_points, objects, rng=None):
+def sample_random(context, n_points, objects, rng=None, bounds=None):
     if rng is None:
         rng = np.random.default_rng()
+    if bounds is not None:
+        # Sample uniformly in the camera region directly.
+        mins = np.asarray(bounds[0], dtype=np.float64)
+        maxs = np.asarray(bounds[1], dtype=np.float64)
+        if np.allclose(mins, maxs):
+            maxs = mins + 1.0
+        pts = rng.uniform(mins, maxs, size=(int(n_points), 3))
+        rgb = np.full((int(n_points), 3), 180, dtype=np.uint8)
+        return pts, rgb
     mins = np.full(3, np.inf)
     maxs = np.full(3, -np.inf)
     for obj in objects:

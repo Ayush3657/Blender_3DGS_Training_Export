@@ -70,6 +70,21 @@ class GS_ExportSettings(PropertyGroup):
         default=200000, min=1000, max=20000000, soft_max=2000000,
     )
 
+    pc_limit_to_cameras: BoolProperty(
+        name="Limit to Camera Region",
+        description="Only sample geometry near where the cameras are. Prevents stray "
+                    "or far-away objects elsewhere in the scene from dominating the "
+                    "cloud (or blowing it out to infinity)",
+        default=True,
+    )
+
+    pc_region_padding: FloatProperty(
+        name="Region Padding",
+        description="Extra margin (metres) added around the camera bounding box when "
+                    "limiting the sample region. Increase if walls/ceiling get cut off",
+        default=2.0, min=0.0, soft_max=20.0, subtype='DISTANCE',
+    )
+
     write_ply: BoolProperty(
         name="Also Write points3D.ply",
         description="Write a binary PLY copy of the point cloud (handy for previewing, "

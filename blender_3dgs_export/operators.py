@@ -806,15 +806,22 @@ class GS_OT_render_export(Operator):
                                      "falling back to surface sampling")
             mode = 'SURFACE'
 
+        # Limit sampling to the region the cameras occupy, so stray/far geometry
+        # elsewhere in the scene can't dominate (or blow the cloud to infinity).
+        bounds = None
+        if props.pc_limit_to_cameras and cam_records:
+            centers = np.array([(-r['R'].T @ r['t']) for r in cam_records])
+            bounds = sampling.region_bounds_from_centers(centers, props.pc_region_padding)
+
         objs = self._mesh_objects(context, props)
         if mode == 'SURFACE':
-            xyz, rgb = pointcloud.sample_surface(context, n, objs)
+            xyz, rgb = pointcloud.sample_surface(context, n, objs, bounds=bounds)
             if len(xyz) > 0:
                 return xyz, rgb
-            self.report({'WARNING'}, "No mesh surfaces to sample; using random points")
+            self.report({'WARNING'}, "No mesh surfaces in the camera region; using random points")
             mode = 'RANDOM'
         if mode == 'RANDOM':
-            return pointcloud.sample_random(context, n, objs)
+            return pointcloud.sample_random(context, n, objs, bounds=bounds)
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.uint8)
 
     def _mesh_objects(self, context, props):

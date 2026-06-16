@@ -135,6 +135,14 @@ The *Cameras* panel shows the live camera count for whichever method you use.
 
 `Point Count` is the target total.
 
+**Limit to Camera Region** *(on by default)* — only samples geometry near where
+the cameras are (their bounding box, expanded by *Region Padding* metres). This
+is important for large scenes: stray or far-away objects elsewhere in the file
+would otherwise dominate the area-weighted sampling and push the cloud out to
+huge coordinates, so the actual room gets almost no points and training
+initializes random splats off at infinity. Increase *Region Padding* if walls or
+the ceiling get cut off; turn it off only if your whole scene is the subject.
+
 ### 3. Output & export
 **Output & Export** panel:
 - **Output Folder** — dataset root (save your .blend first, or use an absolute
