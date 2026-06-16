@@ -2,7 +2,8 @@
 
 import bpy
 from bpy.props import (
-    StringProperty, EnumProperty, IntProperty, BoolProperty, PointerProperty,
+    StringProperty, EnumProperty, IntProperty, FloatProperty, BoolProperty,
+    PointerProperty,
 )
 from bpy.types import PropertyGroup
 
