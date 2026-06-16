@@ -88,3 +88,38 @@ def get_extrinsics(cam_obj):
     R_np = np.array(R, dtype=np.float64)        # mathutils 3x3 -> (3, 3)
     t_np = np.array(tvec, dtype=np.float64)
     return qvec, tvec, R_np, t_np
+
+
+# --------------------------------------------------------------------------- #
+# Up-axis conversion (output orientation)
+# --------------------------------------------------------------------------- #
+# Blender world is Z-up; most 3DGS viewers (LichtFeld Studio, OpenGL-based) are
+# Y-up, so a Z-up scene appears tipped 90° on its side. up_axis_matrix() returns
+# the world rotation R_up that maps Blender world coordinates into the chosen
+# output convention. The SAME rotation is applied to points and camera poses so
+# the reconstruction stays internally consistent — only its orientation changes.
+def up_axis_matrix(mode):
+    """Return a 3x3 numpy rotation for the requested up axis, or None for no change."""
+    if mode == 'Y_UP':
+        # Z-up -> Y-up: (x, y, z) -> (x, z, -y)
+        return np.array([[1.0, 0.0, 0.0],
+                         [0.0, 0.0, 1.0],
+                         [0.0, -1.0, 0.0]], dtype=np.float64)
+    return None  # 'Z_UP' / identity
+
+
+def rotate_world_to_cam(R_w2c, t_w2c, R_up):
+    """Express a world-to-camera (R, t) in a world rotated by R_up.
+
+    X_cam = R_w2c · X_world + t, and X_world = R_upᵀ · X_world'  →
+    X_cam = (R_w2c · R_upᵀ) · X_world' + t. Translation is unchanged.
+    """
+    return R_w2c @ R_up.T, t_w2c
+
+
+def matrix_to_qvec(R_np):
+    """world-to-camera 3x3 -> normalized (qw, qx, qy, qz)."""
+    from mathutils import Matrix
+    q = Matrix(R_np.tolist()).to_quaternion()
+    q.normalize()
+    return (q.w, q.x, q.y, q.z)

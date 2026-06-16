@@ -147,6 +147,11 @@ the ceiling get cut off; turn it off only if your whole scene is the subject.
 **Output & Export** panel:
 - **Output Folder** — dataset root (save your .blend first, or use an absolute
   path).
+- **Up Axis** — `Y up` *(default)* rotates the exported world from Blender's
+  native Z-up to Y-up so the scene appears **upright** in LichtFeld Studio and
+  other OpenGL/Y-up viewers (Z-up datasets show up tipped 90° on their side).
+  Points and camera poses are rotated together, so it's a pure reorientation.
+  Use `Z up` to keep Blender's orientation.
 - **COLMAP Format** — `Both` writes `.bin` + `.txt` (recommended; loaders prefer
   `.bin`, the `.txt` is there for eyeballing).
 - **Also Write transforms.json** — on by default; writes a NeRF-style
@@ -236,7 +241,8 @@ python tests/test_colmap_io.py     # bin/txt round-trip vs a reference COLMAP re
 python tests/test_camera_math.py   # intrinsics + extrinsics invariants
 python tests/test_geometry.py      # depth unprojection + surface sampling
 python tests/test_transforms.py    # transforms.json + COLMAP/NeRF pose consistency
-python tests/test_sampling.py      # walkthrough arc-length / frame-step resampling
+python tests/test_sampling.py      # walkthrough resampling + camera-region bounds
+python tests/test_upaxis.py        # Z-up -> Y-up rotation is a rigid reorientation
 ```
 
 ---

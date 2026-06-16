@@ -598,6 +598,22 @@ class GS_OT_render_export(Operator):
         xyz, rgb = self._build_point_cloud(context, self.props, records)
         print("[3DGS] Point cloud: %d points (%s)" % (len(xyz), self.props.pc_mode))
 
+        # Up-axis conversion: rotate points + camera poses together (sampling and
+        # bounds were done in Blender's Z-up frame; this only reorients the output).
+        R_up = camera_utils.up_axis_matrix(self.props.up_axis)
+        if R_up is not None:
+            if len(xyz):
+                xyz = np.asarray(xyz, dtype=np.float64) @ R_up.T
+            for im, rec in zip(images, records):
+                Rp, tp = camera_utils.rotate_world_to_cam(rec['R'], rec['t'], R_up)
+                im['qvec'] = camera_utils.matrix_to_qvec(Rp)
+                im['tvec'] = (float(tp[0]), float(tp[1]), float(tp[2]))
+            R_up4 = np.eye(4)
+            R_up4[:3, :3] = R_up
+            for fr in frames:
+                m = np.array(fr['transform_matrix'], dtype=np.float64)
+                fr['transform_matrix'] = (R_up4 @ m).tolist()
+
         used_ids = {im['camera_id'] for im in images}
         cams_out = [c for c in self.cameras_out if c['id'] in used_ids] or self.cameras_out
         colmap_io.write_model(self.sparse_dir, cams_out, images, xyz, rgb,

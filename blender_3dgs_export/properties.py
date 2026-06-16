@@ -34,6 +34,20 @@ class GS_ExportSettings(PropertyGroup):
         default='BOTH',
     )
 
+    up_axis: EnumProperty(
+        name="Up Axis",
+        description="World up axis of the exported dataset. Blender is Z-up; most 3DGS "
+                    "viewers (LichtFeld Studio, OpenGL) are Y-up, so Z-up scenes appear "
+                    "tipped on their side. Points and camera poses are rotated together",
+        items=[
+            ('Y_UP', "Y up (LichtFeld / most viewers)",
+             "Convert Blender Z-up to Y-up so the scene appears upright"),
+            ('Z_UP', "Z up (Blender, no change)",
+             "Keep Blender's native Z-up orientation"),
+        ],
+        default='Y_UP',
+    )
+
     image_format: EnumProperty(
         name="Image Format",
         items=[
