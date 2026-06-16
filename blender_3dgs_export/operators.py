@@ -420,6 +420,8 @@ class GS_OT_render_export(Operator):
         self.cams = cams
         self.do_render = self.render
         self.depth_mode = (props.pc_mode == 'DEPTH') and self.do_render
+        # Transparency requires an alpha channel -> force PNG (JPEG can't store it).
+        self.image_format_eff = 'PNG' if props.transparent_bg else props.image_format
         self.restore = {}
         self.depth_state = None
         self.tmp_depth_dir = None
@@ -464,7 +466,7 @@ class GS_OT_render_export(Operator):
     # --- precompute per-camera metadata (independent of rendering) -----------
     def _precompute(self, context):
         scene, props = self.scene, self.props
-        ext = IMAGE_EXT[props.image_format]
+        ext = IMAGE_EXT[self.image_format_eff]
         self.cameras_out, self.images_out, self.frames_out = [], [], []
         self.cam_records, self.render_items = [], []
         intr_to_id, used_names = {}, set()
@@ -662,12 +664,19 @@ class GS_OT_render_export(Operator):
             'color_depth': r.image_settings.color_depth,
             'use_motion_blur': r.use_motion_blur,
             'use_file_extension': r.use_file_extension,
+            'film_transparent': r.film_transparent,
             'camera': scene.camera,
             'dof': [],
         }
-        r.image_settings.file_format = props.image_format
-        r.image_settings.color_mode = 'RGB'
-        if props.image_format == 'PNG':
+        r.image_settings.file_format = self.image_format_eff
+        if props.transparent_bg:
+            # Keep the alpha channel so LichtFeld's alpha mask mode can isolate
+            # the object; render a transparent background to fill it.
+            r.image_settings.color_mode = 'RGBA'
+            r.film_transparent = True
+        else:
+            r.image_settings.color_mode = 'RGB'
+        if self.image_format_eff == 'PNG':
             r.image_settings.color_depth = '8'
         r.use_file_extension = True
         if props.disable_motion_blur:
@@ -686,6 +695,7 @@ class GS_OT_render_export(Operator):
         r.image_settings.color_depth = snap['color_depth']
         r.use_motion_blur = snap['use_motion_blur']
         r.use_file_extension = snap['use_file_extension']
+        r.film_transparent = snap['film_transparent']
         if snap['camera'] is not None:
             scene.camera = snap['camera']
         for cam, val in snap.get('dof', []):

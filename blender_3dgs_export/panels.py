@@ -76,7 +76,10 @@ class GS_PT_output(GS_PT_base, Panel):
         layout.prop(props, "output_dir")
         layout.prop(props, "up_axis")
         layout.prop(props, "colmap_format")
-        layout.prop(props, "image_format")
+        row = layout.row()
+        row.enabled = not props.transparent_bg   # transparency forces PNG
+        row.prop(props, "image_format")
+        layout.prop(props, "transparent_bg")
         layout.prop(props, "write_transforms_json")
 
         col = layout.column(align=True)

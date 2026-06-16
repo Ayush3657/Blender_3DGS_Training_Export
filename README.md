@@ -156,6 +156,12 @@ the ceiling get cut off; turn it off only if your whole scene is the subject.
   `.bin`, the `.txt` is there for eyeballing).
 - **Also Write transforms.json** — on by default; writes a NeRF-style
   `transforms.json` at the dataset root next to the COLMAP model (see below).
+- **Transparent Background (RGBA)** — for isolating a **single object** (e.g. one
+  piece of furniture). Renders a transparent background and keeps the alpha
+  channel in the PNG, so you can train with a mask: in LichtFeld set
+  **Mask Mode → alpha**. The object is reconstructed cleanly with no background
+  floaters. Forces PNG output. *Object capture only* — leave it **off** for full
+  room scans (there you want the whole environment). See below.
 - **Disable Depth of Field / Motion Blur** — on by default; both break multi-view
   consistency. They're toggled only for the export and restored afterward.
 - Hit **Render & Export Dataset**. Frames render one by one in the **render view**
@@ -183,6 +189,24 @@ If LichtFeld ever rejects the model, switch **COLMAP Format** to `Binary` (or
 loaders prefer different variants.
 
 ---
+
+## Isolating a single object (transparency + mask)
+
+To capture one object on its own (cleaner than masking out a background later):
+
+1. Blender: **Render Properties ▸ Film ▸ Transparent** ✓ (the addon also enables
+   this for you when the option below is on).
+2. Addon: **Output & Export ▸ Transparent Background (RGBA)** ✓. Output is forced
+   to RGBA PNG so the alpha (object silhouette) is preserved.
+3. Capture all around the object — the **Dome**/**Arc** camera array or an orbit
+   walkthrough.
+4. LichtFeld Studio: set **Mask Mode → alpha** so it uses the PNG alpha as the
+   object mask.
+
+Result: Gaussians are fit only to the object — far fewer floaters and sharper
+detail for the same Gaussian budget. Note you lose contact shadows (the object
+"floats", which is normal for product-style assets). This is **not** for room
+scans, where you want the full environment.
 
 ## transforms.json (Nerfstudio / instant-ngp / NeRF)
 

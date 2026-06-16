@@ -57,6 +57,15 @@ class GS_ExportSettings(PropertyGroup):
         default='PNG',
     )
 
+    transparent_bg: BoolProperty(
+        name="Transparent Background (RGBA)",
+        description="Render a transparent background and keep the alpha channel "
+                    "(RGBA PNG) so a single isolated object can be trained with a "
+                    "mask. In LichtFeld set Mask Mode to 'alpha'. Forces PNG output. "
+                    "For object capture only — leave off for full room scans",
+        default=False,
+    )
+
     pc_mode: EnumProperty(
         name="Point Cloud",
         description="How to generate the initial points3D cloud",
