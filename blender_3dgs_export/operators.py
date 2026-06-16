@@ -538,10 +538,13 @@ class GS_OT_render_export(Operator):
         self.stop = True
 
     def _add_handlers(self):
+        # Insert at the FRONT so our state updates run before any third-party
+        # render handler (e.g. BlenderKit) that might raise on this Blender version
+        # and otherwise interrupt the chain before our finalization.
         h = bpy.app.handlers
-        h.render_pre.append(self._on_render_pre)
-        h.render_complete.append(self._on_render_complete)
-        h.render_cancel.append(self._on_render_cancel)
+        h.render_pre.insert(0, self._on_render_pre)
+        h.render_complete.insert(0, self._on_render_complete)
+        h.render_cancel.insert(0, self._on_render_cancel)
         self._handlers_added = True
 
     def _remove_handlers(self):
