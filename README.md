@@ -118,6 +118,14 @@ camera through open space:
 
 The *Cameras* panel shows the live camera count for whichever method you use.
 
+**Cull Clipping Cameras** — after baking a walkthrough, some cameras may end up
+buried in furniture or poking through a wall. This operator casts a grid of rays
+across each camera's frustum and flags those whose view is blocked by geometry
+closer than *Clip Distance* (for at least *Blocked Fraction* of the rays). It
+**selects** them by default so you can review (run again with **Delete** ticked
+to remove them). Tune *Clip Distance* up to also cull cameras jammed close to a
+surface; it leaves valid open views and intentional close-ups alone.
+
 > Tip — to cover walls you'd otherwise miss, do a couple of passes (e.g. one
 > facing forward down the room, one panning along each wall), or sweep the view
 > side-to-side as you walk, just like scanning with a phone.

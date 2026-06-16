@@ -381,6 +381,81 @@ class GS_OT_bake_cameras_from_anim(Operator):
 
 
 # --------------------------------------------------------------------------- #
+# Detect & remove cameras whose view is blocked by very close geometry
+# --------------------------------------------------------------------------- #
+class GS_OT_cull_clipping_cameras(Operator):
+    bl_idname = "gs_export.cull_clipping_cameras"
+    bl_label = "Cull Clipping Cameras"
+    bl_description = ("Detect cameras whose view is blocked by geometry right in front "
+                      "(buried in furniture, poking through a wall) and select or delete them")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    clip_distance: FloatProperty(
+        name="Clip Distance", default=0.2, min=0.001, soft_max=2.0, subtype='DISTANCE',
+        description="A view ray hitting geometry closer than this counts as 'blocked'")
+    block_fraction: FloatProperty(
+        name="Blocked Fraction", default=0.5, min=0.05, max=1.0, subtype='FACTOR',
+        description="Flag the camera if at least this fraction of its view rays are blocked")
+    grid: IntProperty(
+        name="Ray Grid", default=7, min=2, max=21,
+        description="Rays are cast in a grid×grid pattern across each camera's frustum")
+    delete: BoolProperty(
+        name="Delete (otherwise just Select)", default=False,
+        description="Delete the flagged cameras. Off = only select them so you can review first")
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_cameras_in_collection(context.scene.gs_export.camera_collection))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def _is_clipped(self, scene, deps, cam_obj):
+        cam = cam_obj.data
+        mw = cam_obj.matrix_world
+        origin = mw.translation
+        tr, br, bl, tl = cam.view_frame(scene=scene)   # frustum corners, camera space
+        n = max(2, self.grid)
+        total = blocked = 0
+        for i in range(n):
+            s = i / (n - 1)
+            for j in range(n):
+                t = j / (n - 1)
+                p_local = bl.lerp(br, s).lerp(tl.lerp(tr, s), t)
+                direction = (mw @ p_local) - origin
+                if direction.length == 0:
+                    continue
+                direction = direction.normalized()
+                hit, loc, _, _, _, _ = scene.ray_cast(deps, origin, direction)
+                total += 1
+                if hit and (loc - origin).length < self.clip_distance:
+                    blocked += 1
+        return total > 0 and (blocked / total) >= self.block_fraction
+
+    def execute(self, context):
+        scene = context.scene
+        deps = context.evaluated_depsgraph_get()
+        cams = _cameras_in_collection(scene.gs_export.camera_collection)
+        flagged = [c for c in cams if self._is_clipped(scene, deps, c)]
+
+        if self.delete:
+            for c in flagged:
+                bpy.data.objects.remove(c, do_unlink=True)
+            self.report({'INFO'}, "Deleted %d clipped camera(s) of %d"
+                        % (len(flagged), len(cams)))
+        else:
+            for o in list(context.selected_objects):
+                o.select_set(False)
+            for c in flagged:
+                c.select_set(True)
+            if flagged:
+                context.view_layer.objects.active = flagged[0]
+            self.report({'INFO'}, "Selected %d clipped camera(s) of %d (review, then delete)"
+                        % (len(flagged), len(cams)))
+        return {'FINISHED'}
+
+
+# --------------------------------------------------------------------------- #
 # Render + export
 # --------------------------------------------------------------------------- #
 class GS_OT_render_export(Operator):
@@ -872,6 +947,7 @@ classes = (
     GS_OT_add_camera_array,
     GS_OT_prepare_walkthrough,
     GS_OT_bake_cameras_from_anim,
+    GS_OT_cull_clipping_cameras,
     GS_OT_render_export,
     GS_OT_export_cameras_only,
 )

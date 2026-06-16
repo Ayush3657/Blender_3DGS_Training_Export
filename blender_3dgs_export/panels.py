@@ -30,6 +30,8 @@ class GS_PT_cameras(GS_PT_base, Panel):
         else:
             box.label(text=f"{len(cams)} camera(s) to export", icon='CAMERA_DATA')
 
+        layout.operator("gs_export.cull_clipping_cameras", icon='TRASH')
+
 
 class GS_PT_capture(GS_PT_base, Panel):
     bl_idname = "GS_PT_capture"
