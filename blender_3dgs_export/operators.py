@@ -3,7 +3,6 @@
 import os
 import re
 import math
-import tempfile
 import shutil
 
 import bpy
@@ -498,17 +497,19 @@ class GS_OT_render_export(Operator):
         # Transparency requires an alpha channel -> force PNG (JPEG can't store it).
         self.image_format_eff = 'PNG' if props.transparent_bg else props.image_format
         self.restore = {}
-        self.depth_state = None
-        self.tmp_depth_dir = None
+        self.pass_state = None
         self.frame = scene.frame_current
+        # Ground-truth maps written alongside the beauty (extra render passes).
+        self.want_depth = self.do_render and (props.export_depth or self.depth_mode)
+        self.want_normal = self.do_render and props.export_normal
+        self.want_albedo = self.do_render and props.export_albedo
+        self.keep_depth = props.export_depth  # depth only feeding the cloud is transient
 
         try:
             if self.do_render:
                 self.restore = self._apply_render_settings(scene, props, cams)
-            if self.depth_mode:
-                self.tmp_depth_dir = tempfile.mkdtemp(prefix="gs_depth_")
-                self.depth_state = self._setup_depth_nodes(scene, context.view_layer,
-                                                           self.tmp_depth_dir)
+            if self.want_depth or self.want_normal or self.want_albedo:
+                self.pass_state = self._setup_passes(scene, context.view_layer)
             self._precompute(context)
         except Exception as exc:                       # noqa: BLE001
             self._cleanup(context)
@@ -575,8 +576,8 @@ class GS_OT_render_export(Operator):
                 'transform_matrix': [[float(v) for v in row] for row in cam.matrix_world],
                 'w': w, 'h': h, 'fl_x': fx, 'fl_y': fy, 'cx': cx, 'cy': cy})
             self.cam_records.append({
-                'depth_path': (os.path.join(self.tmp_depth_dir, f"{stem}_depth_{self.frame:04d}.exr")
-                               if self.depth_mode else None),
+                'depth_path': (os.path.join(self.out, "depths", "%s_%04d.exr" % (stem, self.frame))
+                               if self.want_depth else None),
                 'image_path': os.path.join(self.images_dir, image_name),
                 'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'R': R_np, 't': t_np})
 
@@ -595,12 +596,19 @@ class GS_OT_render_export(Operator):
         item = self.render_items[self.index]
         self.scene.camera = self.cams[self.index]
         self.scene.render.filepath = item['filepath']
-        if self.depth_mode:
-            self.depth_state['fout'].file_slots[0].path = "%s_depth_" % item['stem']
+        self._set_pass_paths(item['stem'])
         self._set_status(context, "3DGS: rendering %d/%d — %s   (Esc to stop)"
                          % (self.index + 1, len(self.cams), item['stem']))
         print("[3DGS] Rendering %d/%d: %s" % (self.index + 1, len(self.cams), item['stem']))
         bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)
+
+    def _set_pass_paths(self, stem):
+        """Point each File Output slot at <out>/<subdir>/<stem>_ for this camera."""
+        if not (self.pass_state and self.pass_state.get('fout')):
+            return
+        fout = self.pass_state['fout']
+        for s in self.pass_state['slots']:
+            fout.file_slots[s['index']].path = "%s/%s_" % (s['subdir'], stem)
 
     # render handlers (bound methods; receive (scene, depsgraph) on modern Blender)
     def _on_render_pre(self, *args):
@@ -658,8 +666,7 @@ class GS_OT_render_export(Operator):
             for i, item in enumerate(self.render_items):
                 self.scene.camera = self.cams[i]
                 self.scene.render.filepath = item['filepath']
-                if self.depth_mode:
-                    self.depth_state['fout'].file_slots[0].path = "%s_depth_" % item['stem']
+                self._set_pass_paths(item['stem'])
                 print("[3DGS] Rendering %d/%d: %s" % (i + 1, len(self.cams), item['stem']))
                 bpy.ops.render.render(write_still=True)
             self._write_outputs(context, len(self.render_items))
@@ -705,12 +712,15 @@ class GS_OT_render_export(Operator):
         self._counts = (len(images), len(cams_out), len(xyz))
 
     def _cleanup(self, context):
-        if self.depth_state is not None:
-            self._teardown_depth_nodes(self.scene, context.view_layer, self.depth_state)
-            self.depth_state = None
-        if self.tmp_depth_dir and os.path.isdir(self.tmp_depth_dir):
-            shutil.rmtree(self.tmp_depth_dir, ignore_errors=True)
-            self.tmp_depth_dir = None
+        if self.pass_state is not None:
+            self._teardown_passes(self.scene, context.view_layer, self.pass_state)
+            self.pass_state = None
+        # Depth maps written only to seed the point cloud (not requested as an
+        # output) are transient — remove them.
+        if getattr(self, 'want_depth', False) and not getattr(self, 'keep_depth', False):
+            d = os.path.join(self.out, "depths")
+            if os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
         if self.restore:
             self._restore_render_settings(self.scene, self.restore)
             self.restore = {}
@@ -779,32 +789,43 @@ class GS_OT_render_export(Operator):
             except ReferenceError:
                 pass
 
-    # --- depth compositor setup / teardown ----------------------------------
+    # --- compositor passes (depth / normal / albedo) setup & teardown --------
     # Blender 5.0 reworked the compositor: scene.node_tree -> scene.compositing_node_group
     # (a node-group data block) and the Composite node -> a Group Output node. We detect
-    # the API at runtime so the depth mode works on 5.0+ and still falls back on 4.x.
+    # the API at runtime so this works on 5.0+ and still falls back on 4.x. All requested
+    # passes are written, as 32-bit float EXR, by one File Output node.
     @staticmethod
-    def _enable_depth_pass(view_layer, state):
-        # RNA property for the Z/Depth pass (name kept defensive across versions).
-        for attr in ('use_pass_z', 'use_pass_depth'):
+    def _enable_pass(view_layer, state, attr_candidates):
+        for attr in attr_candidates:
             if hasattr(view_layer, attr):
-                state['pass_attr'] = attr
-                state['orig_pass'] = getattr(view_layer, attr)
+                state.setdefault('passes', []).append((attr, getattr(view_layer, attr)))
                 setattr(view_layer, attr, True)
                 return
-        state['pass_attr'] = None
+        state.setdefault('passes', [])
 
-    def _setup_depth_nodes(self, scene, view_layer, tmp_dir):
-        state = {'created': [], 'v5': hasattr(scene, 'compositing_node_group')}
-        self._enable_depth_pass(view_layer, state)
+    def _setup_passes(self, scene, view_layer):
+        # (key, view-layer pass attrs, RenderLayers socket names, output subfolder)
+        specs = []
+        if self.want_depth:
+            specs.append(('depth', ('use_pass_z', 'use_pass_depth'), ('Depth', 'Z'), 'depths'))
+        if self.want_normal:
+            specs.append(('normal', ('use_pass_normal',), ('Normal',), 'normals'))
+        if self.want_albedo:
+            specs.append(('albedo', ('use_pass_diffuse_color',),
+                          ('Diffuse Color', 'DiffCol'), 'albedo'))
+
+        state = {'created': [], 'slots': [], 'fout': None,
+                 'v5': hasattr(scene, 'compositing_node_group')}
+        for _key, attrs, _socks, _sub in specs:
+            self._enable_pass(view_layer, state, attrs)
 
         # Make sure the compositor actually runs at render time.
         if hasattr(scene.render, 'use_compositing'):
             state['orig_use_compositing'] = scene.render.use_compositing
             scene.render.use_compositing = True
 
+        # Ensure a compositor tree (5.0 group data-block, or legacy scene.node_tree).
         if state['v5']:
-            # Blender 5.0+: compositor is an independent node-group data block.
             tree = scene.compositing_node_group
             state['orig_group'] = tree
             state['created_group'] = tree is None
@@ -812,54 +833,75 @@ class GS_OT_render_export(Operator):
                 tree = bpy.data.node_groups.new("3DGS_Compositing", "CompositorNodeTree")
                 scene.compositing_node_group = tree
         else:
-            # Blender 3.3 - 4.x: compositor lives directly on the scene.
             state['orig_use_nodes'] = scene.use_nodes
             scene.use_nodes = True
             tree = scene.node_tree
         state['tree'] = tree
 
-        # Render Layers node — the source of the Depth pass.
         rl = next((n for n in tree.nodes if n.type == 'R_LAYERS'), None)
         if rl is None:
             rl = tree.nodes.new('CompositorNodeRLayers')
             state['created'].append(rl)
 
-        # If we created the compositor tree ourselves, wire the beauty image to the
-        # scene output so the rendered PNG isn't black. Never touch a user's own graph.
+        # Keep the beauty image reaching the scene output if we built the tree
+        # ourselves (never disturb a user's existing compositor graph).
         if state['v5']:
             if state['created_group']:
-                out = tree.nodes.new('NodeGroupOutput')
-                state['created'].append(out)
+                gout = tree.nodes.new('NodeGroupOutput')
+                state['created'].append(gout)
                 tree.interface.new_socket(name='Image', in_out='OUTPUT',
                                           socket_type='NodeSocketColor')
-                img_sock = rl.outputs.get('Image')
-                if img_sock is not None and len(out.inputs) > 0:
-                    tree.links.new(img_sock, out.inputs[0])
+                img = rl.outputs.get('Image')
+                if img is not None and len(gout.inputs) > 0:
+                    tree.links.new(img, gout.inputs[0])
         else:
             comp = next((n for n in tree.nodes if n.type == 'COMPOSITE'), None)
             if comp is None:
                 comp = tree.nodes.new('CompositorNodeComposite')
                 state['created'].append(comp)
-                img_sock = rl.outputs.get('Image')
-                if img_sock is not None:
-                    tree.links.new(img_sock, comp.inputs['Image'])
+                img = rl.outputs.get('Image')
+                if img is not None:
+                    tree.links.new(img, comp.inputs['Image'])
 
-        # File Output node that writes the depth pass to OpenEXR.
+        # One File Output node, EXR float, one slot per available pass.
         fout = tree.nodes.new('CompositorNodeOutputFile')
-        fout.label = "3DGS_DEPTH"
-        fout.base_path = tmp_dir
+        fout.label = "3DGS_PASSES"
+        fout.base_path = self.out
         fout.format.file_format = 'OPEN_EXR'
         fout.format.color_mode = 'RGB'
         fout.format.color_depth = '32'
-        depth_sock = rl.outputs.get('Depth') or rl.outputs.get('Z')
-        if depth_sock is None:
-            raise RuntimeError("Render Layers node has no Depth output")
-        tree.links.new(depth_sock, fout.inputs[0])
         state['created'].append(fout)
-        state['fout'] = fout
+
+        first = True
+        for key, _attrs, socks, sub in specs:
+            sock = None
+            for s in socks:
+                sock = rl.outputs.get(s)
+                if sock is not None:
+                    break
+            if sock is None:
+                self.report({'WARNING'}, "Render Layers has no '%s' pass; skipped" % key)
+                continue
+            if first:
+                idx = 0           # reuse the node's default slot
+                first = False
+            else:
+                fout.file_slots.new(sub)
+                idx = len(fout.file_slots) - 1
+            tree.links.new(sock, fout.inputs[idx])
+            state['slots'].append({'index': idx, 'subdir': sub, 'key': key})
+
+        if state['slots']:
+            state['fout'] = fout
+        else:
+            try:
+                tree.nodes.remove(fout)
+                state['created'].remove(fout)
+            except Exception:
+                pass
         return state
 
-    def _teardown_depth_nodes(self, scene, view_layer, state):
+    def _teardown_passes(self, scene, view_layer, state):
         tree = state.get('tree')
         try:
             if tree is not None:
@@ -886,9 +928,9 @@ class GS_OT_render_export(Operator):
                     scene.render.use_compositing = state['orig_use_compositing']
                 except Exception:
                     pass
-            if state.get('pass_attr'):
+            for attr, val in state.get('passes', []):
                 try:
-                    setattr(view_layer, state['pass_attr'], state['orig_pass'])
+                    setattr(view_layer, attr, val)
                 except Exception:
                     pass
 

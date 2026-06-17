@@ -84,6 +84,13 @@ class GS_PT_output(GS_PT_base, Panel):
         layout.prop(props, "transparent_bg")
         layout.prop(props, "write_transforms_json")
 
+        box = layout.box()
+        box.label(text="Ground-Truth Maps (EXR, for supervised / 2DGS)", icon='RENDERLAYERS')
+        col = box.column(align=True)
+        col.prop(props, "export_depth")
+        col.prop(props, "export_normal")
+        col.prop(props, "export_albedo")
+
         col = layout.column(align=True)
         col.prop(props, "disable_dof")
         col.prop(props, "disable_motion_blur")

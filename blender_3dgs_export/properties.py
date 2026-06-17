@@ -116,6 +116,24 @@ class GS_ExportSettings(PropertyGroup):
         default=False,
     )
 
+    export_depth: BoolProperty(
+        name="Depth Maps",
+        description="Write a 32-bit float EXR depth map per view to depths/ "
+                    "(metric, camera planar Z). For depth-supervised / 2DGS training",
+        default=False,
+    )
+    export_normal: BoolProperty(
+        name="Normal Maps",
+        description="Write a 32-bit float EXR normal map per view to normals/ "
+                    "(world space). For normal-supervised / 2DGS training",
+        default=False,
+    )
+    export_albedo: BoolProperty(
+        name="Albedo Maps",
+        description="Write a 32-bit float EXR diffuse-color (albedo) map per view to albedo/",
+        default=False,
+    )
+
     write_transforms_json: BoolProperty(
         name="Also Write transforms.json",
         description="Additionally export a NeRF / Nerfstudio / instant-ngp transforms.json "

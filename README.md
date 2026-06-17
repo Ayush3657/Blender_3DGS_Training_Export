@@ -216,6 +216,33 @@ detail for the same Gaussian budget. Note you lose contact shadows (the object
 "floats", which is normal for product-style assets). This is **not** for room
 scans, where you want the full environment.
 
+## Ground-truth depth / normal / albedo maps (supervised & 2DGS training)
+
+Because the scene is synthetic, Blender can export *exact* per-view geometry
+buffers — far better supervision than anything estimated from images. Use these
+to pull Gaussians onto the surface (depth/normal-supervised 3DGS, 2DGS, etc.).
+
+In **Output & Export ▸ Ground-Truth Maps**, toggle any of:
+- **Depth Maps** → `depths/<name>.exr` — 32-bit float, **metric camera planar
+  Z-depth** (scene units; meters by default). Background is a very large value —
+  mask it by alpha or a depth threshold in your trainer.
+- **Normal Maps** → `normals/<name>.exr` — 32-bit float, **world-space** normals
+  (Blender/Cycles convention), xyz in RGB.
+- **Albedo Maps** → `albedo/<name>.exr` — 32-bit float diffuse color.
+
+They're rendered as **extra passes in the same render** (one File Output node),
+so the added cost is negligible. Requires render passes the engine provides —
+best with **Cycles** (a warning is shown if a pass is unavailable).
+
+> **Convention notes.** Normals are world-space. If you enable **Up Axis = Y up**,
+> the poses/points are rotated but the normal EXRs stay in Blender's world frame —
+> for world-space normal supervision either export with **Up Axis = Z up** (so
+> everything shares one frame) or apply the same Z→Y rotation to normals in your
+> trainer. Depth is camera-relative, so it's unaffected by the up-axis choice.
+
+These maps are **opt-in and independent** of the point-cloud and COLMAP options —
+the existing scan-style export is unchanged when they're off.
+
 ## transforms.json (Nerfstudio / instant-ngp / NeRF)
 
 With **Also Write transforms.json** enabled, a `transforms.json` is written at the
