@@ -90,6 +90,7 @@ class GS_PT_output(GS_PT_base, Panel):
         col.prop(props, "export_depth")
         col.prop(props, "export_normal")
         col.prop(props, "export_albedo")
+        box.operator("gs_export.export_maps_only", icon='RENDERLAYERS')
 
         col = layout.column(align=True)
         col.prop(props, "disable_dof")

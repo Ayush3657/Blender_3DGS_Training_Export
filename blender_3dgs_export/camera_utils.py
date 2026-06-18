@@ -100,8 +100,13 @@ def get_extrinsics(cam_obj):
 # the reconstruction stays internally consistent — only its orientation changes.
 def up_axis_matrix(mode):
     """Return a 3x3 numpy rotation for the requested up axis, or None for no change."""
+    if mode == 'NEG_Y_UP':
+        # Blender +Z up -> -Y up (Rx +90°): (x, y, z) -> (x, -z, y). LichtFeld Studio.
+        return np.array([[1.0, 0.0, 0.0],
+                         [0.0, 0.0, -1.0],
+                         [0.0, 1.0, 0.0]], dtype=np.float64)
     if mode == 'Y_UP':
-        # Z-up -> Y-up: (x, y, z) -> (x, z, -y)
+        # Blender +Z up -> +Y up (Rx -90°): (x, y, z) -> (x, z, -y). glTF/OpenGL standard.
         return np.array([[1.0, 0.0, 0.0],
                          [0.0, 0.0, 1.0],
                          [0.0, -1.0, 0.0]], dtype=np.float64)

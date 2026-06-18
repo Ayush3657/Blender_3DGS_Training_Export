@@ -464,6 +464,7 @@ class GS_OT_render_export(Operator):
     bl_options = {'REGISTER'}
 
     render: BoolProperty(default=True, options={'HIDDEN'})
+    maps_only: BoolProperty(default=False, options={'HIDDEN'})
 
     def execute(self, context):
         scene = context.scene
@@ -499,11 +500,23 @@ class GS_OT_render_export(Operator):
         self.restore = {}
         self.pass_state = None
         self.frame = scene.frame_current
-        # Ground-truth maps written alongside the beauty (extra render passes).
-        self.want_depth = self.do_render and (props.export_depth or self.depth_mode)
-        self.want_normal = self.do_render and props.export_normal
-        self.want_albedo = self.do_render and props.export_albedo
-        self.keep_depth = props.export_depth  # depth only feeding the cloud is transient
+
+        if self.maps_only:
+            # Render ONLY the geometry passes (fast, 1 sample) for the existing
+            # cameras, without re-rendering or overwriting the colour images.
+            if not (props.export_depth or props.export_normal or props.export_albedo):
+                self.report({'ERROR'}, "Enable at least one Ground-Truth Map first")
+                return {'CANCELLED'}
+            self.want_depth = props.export_depth
+            self.want_normal = props.export_normal
+            self.want_albedo = props.export_albedo
+            self.keep_depth = True
+        else:
+            # Ground-truth maps written alongside the beauty (extra render passes).
+            self.want_depth = self.do_render and (props.export_depth or self.depth_mode)
+            self.want_normal = self.do_render and props.export_normal
+            self.want_albedo = self.do_render and props.export_albedo
+            self.keep_depth = props.export_depth  # depth only feeding the cloud is transient
 
         try:
             if self.do_render:
@@ -600,7 +613,7 @@ class GS_OT_render_export(Operator):
         self._set_status(context, "3DGS: rendering %d/%d — %s   (Esc to stop)"
                          % (self.index + 1, len(self.cams), item['stem']))
         print("[3DGS] Rendering %d/%d: %s" % (self.index + 1, len(self.cams), item['stem']))
-        bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)
+        bpy.ops.render.render('INVOKE_DEFAULT', write_still=not self.maps_only)
 
     def _set_pass_paths(self, stem):
         """Point each File Output slot at <out>/<subdir>/<stem>_ for this camera."""
@@ -668,7 +681,7 @@ class GS_OT_render_export(Operator):
                 self.scene.render.filepath = item['filepath']
                 self._set_pass_paths(item['stem'])
                 print("[3DGS] Rendering %d/%d: %s" % (i + 1, len(self.cams), item['stem']))
-                bpy.ops.render.render(write_still=True)
+                bpy.ops.render.render(write_still=not self.maps_only)
             self._write_outputs(context, len(self.render_items))
         finally:
             self._cleanup(context)
@@ -676,6 +689,10 @@ class GS_OT_render_export(Operator):
 
     # --- outputs + cleanup ---------------------------------------------------
     def _write_outputs(self, context, rendered):
+        if self.maps_only:
+            # Only the GT map EXRs were produced (by the compositor); nothing else.
+            self._counts = (rendered, 0, 0)
+            return
         images = self.images_out[:rendered]
         frames = self.frames_out[:rendered]
         records = self.cam_records[:rendered]
@@ -727,7 +744,10 @@ class GS_OT_render_export(Operator):
 
     def _report_done(self):
         v, c, p = getattr(self, '_counts', (0, 0, 0))
-        msg = "Exported %d views, %d intrinsic(s), %d points -> %s" % (v, c, p, self.out)
+        if self.maps_only:
+            msg = "Wrote ground-truth maps for %d view(s) -> %s" % (v, self.out)
+        else:
+            msg = "Exported %d views, %d intrinsic(s), %d points -> %s" % (v, c, p, self.out)
         self.report({'INFO'}, msg)
         print("[3DGS] %s" % msg)
         return {'FINISHED'}
@@ -764,6 +784,15 @@ class GS_OT_render_export(Operator):
         if self.image_format_eff == 'PNG':
             r.image_settings.color_depth = '8'
         r.use_file_extension = True
+        if self.maps_only:
+            # Depth/normal/albedo passes are geometric — exact at 1 sample, so a
+            # maps-only pass renders almost instantly regardless of beauty samples.
+            if hasattr(scene, 'cycles'):
+                snap['cycles_samples'] = scene.cycles.samples
+                scene.cycles.samples = 1
+            if hasattr(scene, 'eevee') and hasattr(scene.eevee, 'taa_render_samples'):
+                snap['eevee_samples'] = scene.eevee.taa_render_samples
+                scene.eevee.taa_render_samples = 1
         if props.disable_motion_blur:
             r.use_motion_blur = False
         if props.disable_dof:
@@ -781,6 +810,10 @@ class GS_OT_render_export(Operator):
         r.use_motion_blur = snap['use_motion_blur']
         r.use_file_extension = snap['use_file_extension']
         r.film_transparent = snap['film_transparent']
+        if 'cycles_samples' in snap and hasattr(scene, 'cycles'):
+            scene.cycles.samples = snap['cycles_samples']
+        if 'eevee_samples' in snap and hasattr(scene, 'eevee'):
+            scene.eevee.taa_render_samples = snap['eevee_samples']
         if snap['camera'] is not None:
             scene.camera = snap['camera']
         for cam, val in snap.get('dof', []):
@@ -985,6 +1018,23 @@ class GS_OT_export_cameras_only(Operator):
         return bpy.ops.gs_export.render_export(render=False)
 
 
+class GS_OT_export_maps_only(Operator):
+    bl_idname = "gs_export.export_maps_only"
+    bl_label = "Export GT Maps Only (fast, keeps images)"
+    bl_description = ("Render only the ground-truth depth/normal/albedo passes (1 sample) "
+                      "for the camera collection — fast, and does NOT re-render or "
+                      "overwrite the colour images")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        p = context.scene.gs_export
+        return p.export_depth or p.export_normal or p.export_albedo
+
+    def execute(self, context):
+        return bpy.ops.gs_export.render_export('INVOKE_DEFAULT', maps_only=True)
+
+
 classes = (
     GS_OT_add_camera_array,
     GS_OT_prepare_walkthrough,
@@ -992,6 +1042,7 @@ classes = (
     GS_OT_cull_clipping_cameras,
     GS_OT_render_export,
     GS_OT_export_cameras_only,
+    GS_OT_export_maps_only,
 )
 
 

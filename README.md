@@ -155,11 +155,12 @@ the ceiling get cut off; turn it off only if your whole scene is the subject.
 **Output & Export** panel:
 - **Output Folder** — dataset root (save your .blend first, or use an absolute
   path).
-- **Up Axis** — `Y up` *(default)* rotates the exported world from Blender's
-  native Z-up to Y-up so the scene appears **upright** in LichtFeld Studio and
-  other OpenGL/Y-up viewers (Z-up datasets show up tipped 90° on their side).
-  Points and camera poses are rotated together, so it's a pure reorientation.
-  Use `Z up` to keep Blender's orientation.
+- **Up Axis** — fixes orientation in the viewer (Blender is Z-up; Z-up datasets
+  show up tipped 90° sideways). `Y up (LichtFeld Studio)` *(default)* maps Blender
+  +Z → −Y, which is upright in LichtFeld. If a build instead trains **upside
+  down**, switch to `Y up (glTF / alternate)` (+Z → +Y) — the two differ by 180°.
+  `Z up` keeps Blender's orientation. Points and camera poses are rotated
+  together, so it's a pure reorientation.
 - **COLMAP Format** — `Both` writes `.bin` + `.txt` (recommended; loaders prefer
   `.bin`, the `.txt` is there for eyeballing).
 - **Also Write transforms.json** — on by default; writes a NeRF-style
@@ -233,6 +234,14 @@ In **Output & Export ▸ Ground-Truth Maps**, toggle any of:
 They're rendered as **extra passes in the same render** (one File Output node),
 so the added cost is negligible. Requires render passes the engine provides —
 best with **Cycles** (a warning is shown if a pass is unavailable).
+
+**Already rendered your images? Use "Export GT Maps Only".** Depth/normal/albedo
+can't be recovered from finished PNGs — but they're *geometric*, so they're exact
+at 1 sample. This button re-renders **only** those passes at 1 sample (seconds per
+frame) for the current cameras and writes `depths/` `normals/` `albedo/` next to
+your existing `images/` **without overwriting them**. Point the Output Folder at
+your existing dataset, keep the same camera collection, enable the maps you want,
+and run it.
 
 > **Convention notes.** Normals are world-space. If you enable **Up Axis = Y up**,
 > the poses/points are rotated but the normal EXRs stay in Blender's world frame —

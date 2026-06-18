@@ -12,7 +12,16 @@ assert np.allclose(R_up @ R_up.T, np.eye(3))
 # Blender +Z (up) -> +Y (up); +Y(forward) -> -Z
 assert np.allclose(R_up @ [0,0,1], [0,1,0])
 assert np.allclose(R_up @ [0,1,0], [0,0,-1])
-print("R_up is a proper rotation mapping Z-up -> Y-up: OK")
+print("R_up (Y_UP) is a proper rotation mapping Z-up -> +Y: OK")
+
+# NEG_Y_UP (LichtFeld): Blender +Z up -> -Y up, (x,y,z)->(x,-z,y)
+R_up_neg = np.array([[1.,0,0],[0,0,-1],[0,1,0]])
+assert abs(np.linalg.det(R_up_neg) - 1.0) < 1e-12
+assert np.allclose(R_up_neg @ R_up_neg.T, np.eye(3))
+assert np.allclose(R_up_neg @ [0,0,1], [0,-1,0])      # ceiling -> -Y
+# the two Y-up options are 180° apart (this is the upside-down flip)
+assert np.allclose(R_up_neg @ np.array([0,0,1.]), -(R_up @ np.array([0,0,1.])))
+print("R_up (NEG_Y_UP) maps Z-up -> -Y, 180 deg from Y_UP: OK")
 
 def rot(rx,ry,rz):
     cx,sx=np.cos(rx),np.sin(rx);cy,sy=np.cos(ry),np.sin(ry);cz,sz=np.cos(rz),np.sin(rz)
