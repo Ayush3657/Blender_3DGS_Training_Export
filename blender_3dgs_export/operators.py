@@ -2,6 +2,7 @@
 
 import os
 import re
+import glob
 import math
 import shutil
 
@@ -589,8 +590,10 @@ class GS_OT_render_export(Operator):
                 'transform_matrix': [[float(v) for v in row] for row in cam.matrix_world],
                 'w': w, 'h': h, 'fl_x': fx, 'fl_y': fy, 'cx': cx, 'cy': cy})
             self.cam_records.append({
-                'depth_path': (os.path.join(self.out, "depths", "%s_%04d.exr" % (stem, self.frame))
+                # The File Output node may append a frame suffix — resolve by glob later.
+                'depth_glob': (os.path.join(self.out, "depths", stem + "_*.exr")
                                if self.want_depth else None),
+                'depth_path': None,
                 'image_path': os.path.join(self.images_dir, image_name),
                 'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'R': R_np, 't': t_np})
 
@@ -616,12 +619,11 @@ class GS_OT_render_export(Operator):
         bpy.ops.render.render('INVOKE_DEFAULT', write_still=not self.maps_only)
 
     def _set_pass_paths(self, stem):
-        """Point each File Output slot at <out>/<subdir>/<stem>_ for this camera."""
-        if not (self.pass_state and self.pass_state.get('fout')):
+        """Name this camera's pass files (directory is fixed per node at setup)."""
+        if not self.pass_state:
             return
-        fout = self.pass_state['fout']
-        for s in self.pass_state['slots']:
-            fout.file_slots[s['index']].path = "%s/%s_" % (s['subdir'], stem)
+        for fo in self.pass_state.get('fouts', []):
+            fo['node'].file_name = stem + "_"
 
     # render handlers (bound methods; receive (scene, depsgraph) on modern Blender)
     def _on_render_pre(self, *args):
@@ -837,22 +839,22 @@ class GS_OT_render_export(Operator):
         state.setdefault('passes', [])
 
     def _setup_passes(self, scene, view_layer):
-        # (key, view-layer pass attrs, RenderLayers socket names, output subfolder)
+        # (key, view-layer pass attrs, RenderLayers socket names, subfolder, item socket type)
         specs = []
         if self.want_depth:
-            specs.append(('depth', ('use_pass_z', 'use_pass_depth'), ('Depth', 'Z'), 'depths'))
+            specs.append(('depth', ('use_pass_z', 'use_pass_depth'),
+                          ('Depth', 'Z'), 'depths', 'FLOAT'))
         if self.want_normal:
-            specs.append(('normal', ('use_pass_normal',), ('Normal',), 'normals'))
+            specs.append(('normal', ('use_pass_normal',),
+                          ('Normal',), 'normals', 'VECTOR'))
         if self.want_albedo:
             specs.append(('albedo', ('use_pass_diffuse_color',),
-                          ('Diffuse Color', 'DiffCol'), 'albedo'))
+                          ('Diffuse Color', 'DiffCol'), 'albedo', 'RGBA'))
 
-        state = {'created': [], 'slots': [], 'fout': None,
-                 'v5': hasattr(scene, 'compositing_node_group')}
-        for _key, attrs, _socks, _sub in specs:
+        state = {'created': [], 'fouts': [], 'v5': hasattr(scene, 'compositing_node_group')}
+        for _key, attrs, _socks, _sub, _t in specs:
             self._enable_pass(view_layer, state, attrs)
 
-        # Make sure the compositor actually runs at render time.
         if hasattr(scene.render, 'use_compositing'):
             state['orig_use_compositing'] = scene.render.use_compositing
             scene.render.use_compositing = True
@@ -896,17 +898,9 @@ class GS_OT_render_export(Operator):
                 if img is not None:
                     tree.links.new(img, comp.inputs['Image'])
 
-        # One File Output node, EXR float, one slot per available pass.
-        fout = tree.nodes.new('CompositorNodeOutputFile')
-        fout.label = "3DGS_PASSES"
-        fout.base_path = self.out
-        fout.format.file_format = 'OPEN_EXR'
-        fout.format.color_mode = 'RGB'
-        fout.format.color_depth = '32'
-        state['created'].append(fout)
-
-        first = True
-        for key, _attrs, socks, sub in specs:
+        # Blender 5.0: File Output node uses directory + file_name + file_output_items
+        # (typed). One node per pass keeps the per-camera filename unambiguous.
+        for key, _attrs, socks, sub, stype in specs:
             sock = None
             for s in socks:
                 sock = rl.outputs.get(s)
@@ -915,23 +909,36 @@ class GS_OT_render_export(Operator):
             if sock is None:
                 self.report({'WARNING'}, "Render Layers has no '%s' pass; skipped" % key)
                 continue
-            if first:
-                idx = 0           # reuse the node's default slot
-                first = False
-            else:
-                fout.file_slots.new(sub)
-                idx = len(fout.file_slots) - 1
-            tree.links.new(sock, fout.inputs[idx])
-            state['slots'].append({'index': idx, 'subdir': sub, 'key': key})
 
-        if state['slots']:
-            state['fout'] = fout
-        else:
+            fo = tree.nodes.new('CompositorNodeOutputFile')
+            fo.label = "3DGS_" + key.upper()
+            sub_dir = os.path.join(self.out, sub)
+            os.makedirs(sub_dir, exist_ok=True)
+            fo.directory = sub_dir
             try:
-                tree.nodes.remove(fout)
-                state['created'].remove(fout)
+                fo.format.file_format = 'OPEN_EXR'
+                fo.format.color_depth = '32'
             except Exception:
                 pass
+            try:
+                fo.file_output_items.clear()
+            except Exception:
+                pass
+            try:
+                item = fo.file_output_items.new(stype, key)
+                if stype == 'VECTOR':
+                    item.vector_socket_dimensions = 3
+            except Exception as exc:                       # noqa: BLE001
+                self.report({'WARNING'}, "Could not add '%s' output (%s); skipped" % (key, exc))
+                tree.nodes.remove(fo)
+                continue
+            if len(fo.inputs) == 0:
+                self.report({'WARNING'}, "Could not create '%s' output socket; skipped" % key)
+                tree.nodes.remove(fo)
+                continue
+            tree.links.new(sock, fo.inputs[len(fo.inputs) - 1])
+            state['created'].append(fo)
+            state['fouts'].append({'node': fo, 'subdir': sub, 'key': key})
         return state
 
     def _teardown_passes(self, scene, view_layer, state):
@@ -975,6 +982,11 @@ class GS_OT_render_export(Operator):
             return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.uint8)
 
         if mode == 'DEPTH':
+            for rec in cam_records:                       # resolve actual depth EXR files
+                g = rec.get('depth_glob')
+                if g:
+                    matches = glob.glob(g)
+                    rec['depth_path'] = matches[0] if matches else None
             xyz, rgb = pointcloud.points_from_depth(cam_records, n)
             if len(xyz) > 0:
                 return xyz, rgb
