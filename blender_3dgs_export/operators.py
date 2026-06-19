@@ -500,6 +500,7 @@ class GS_OT_render_export(Operator):
         self.image_format_eff = 'PNG' if props.transparent_bg else props.image_format
         self.restore = {}
         self.pass_state = None
+        self.tmp_beauty_dir = None
         self.frame = scene.frame_current
 
         if self.maps_only:
@@ -512,6 +513,11 @@ class GS_OT_render_export(Operator):
             self.want_normal = props.export_normal
             self.want_albedo = props.export_albedo
             self.keep_depth = True
+            # File Output only writes on a "save" render (write_still=True), so we
+            # render at 1 sample and send the throwaway beauty to a temp folder —
+            # the real images/ are never touched.
+            self.tmp_beauty_dir = os.path.join(out, "_gtmaps_tmp")
+            os.makedirs(self.tmp_beauty_dir, exist_ok=True)
         else:
             # Ground-truth maps written alongside the beauty (extra render passes).
             self.want_depth = self.do_render and (props.export_depth or self.depth_mode)
@@ -611,12 +617,13 @@ class GS_OT_render_export(Operator):
     def _render_next(self, context):
         item = self.render_items[self.index]
         self.scene.camera = self.cams[self.index]
-        self.scene.render.filepath = item['filepath']
+        self.scene.render.filepath = (os.path.join(self.tmp_beauty_dir, item['stem'])
+                                      if self.maps_only else item['filepath'])
         self._set_pass_paths(item['stem'])
         self._set_status(context, "3DGS: rendering %d/%d — %s   (Esc to stop)"
                          % (self.index + 1, len(self.cams), item['stem']))
         print("[3DGS] Rendering %d/%d: %s" % (self.index + 1, len(self.cams), item['stem']))
-        bpy.ops.render.render('INVOKE_DEFAULT', write_still=not self.maps_only)
+        bpy.ops.render.render('INVOKE_DEFAULT', write_still=True)
 
     def _set_pass_paths(self, stem):
         """Name this camera's pass files (directory is fixed per node at setup)."""
@@ -680,10 +687,11 @@ class GS_OT_render_export(Operator):
         try:
             for i, item in enumerate(self.render_items):
                 self.scene.camera = self.cams[i]
-                self.scene.render.filepath = item['filepath']
+                self.scene.render.filepath = (os.path.join(self.tmp_beauty_dir, item['stem'])
+                                              if self.maps_only else item['filepath'])
                 self._set_pass_paths(item['stem'])
                 print("[3DGS] Rendering %d/%d: %s" % (i + 1, len(self.cams), item['stem']))
-                bpy.ops.render.render(write_still=not self.maps_only)
+                bpy.ops.render.render(write_still=True)
             self._write_outputs(context, len(self.render_items))
         finally:
             self._cleanup(context)
@@ -734,6 +742,9 @@ class GS_OT_render_export(Operator):
         if self.pass_state is not None:
             self._teardown_passes(self.scene, context.view_layer, self.pass_state)
             self.pass_state = None
+        if getattr(self, 'tmp_beauty_dir', None) and os.path.isdir(self.tmp_beauty_dir):
+            shutil.rmtree(self.tmp_beauty_dir, ignore_errors=True)
+            self.tmp_beauty_dir = None
         # Depth maps written only to seed the point cloud (not requested as an
         # output) are transient — remove them.
         if getattr(self, 'want_depth', False) and not getattr(self, 'keep_depth', False):
@@ -920,11 +931,8 @@ class GS_OT_render_export(Operator):
             sub_dir = os.path.join(self.out, sub)
             os.makedirs(sub_dir, exist_ok=True)
             fo.directory = sub_dir
-            try:
-                fo.format.file_format = 'OPEN_EXR'
-                fo.format.color_depth = '32'
-            except Exception:
-                pass
+            # Add the output item FIRST: with zero items, file_format is locked to
+            # OPEN_EXR_MULTILAYER; once an item exists, OPEN_EXR (separate files) is allowed.
             try:
                 fo.file_output_items.clear()
             except Exception:
@@ -941,6 +949,11 @@ class GS_OT_render_export(Operator):
                 self.report({'WARNING'}, "Could not create '%s' output socket; skipped" % key)
                 tree.nodes.remove(fo)
                 continue
+            try:
+                fo.format.file_format = 'OPEN_EXR'   # now valid (>=1 item); separate EXR per view
+                fo.format.color_depth = '32'
+            except Exception:
+                pass
             tree.links.new(sock, fo.inputs[len(fo.inputs) - 1])
             state['created'].append(fo)
             state['fouts'].append({'node': fo, 'subdir': sub, 'key': key})
