@@ -858,6 +858,11 @@ class GS_OT_render_export(Operator):
         if hasattr(scene.render, 'use_compositing'):
             state['orig_use_compositing'] = scene.render.use_compositing
             scene.render.use_compositing = True
+        # The GPU/realtime compositor does not write File Output nodes on final
+        # renders — force the CPU compositor so the passes actually save.
+        if hasattr(scene.render, 'compositor_device'):
+            state['orig_compositor_device'] = scene.render.compositor_device
+            scene.render.compositor_device = 'CPU'
 
         # Ensure a compositor tree (5.0 group data-block, or legacy scene.node_tree).
         if state['v5']:
@@ -966,6 +971,11 @@ class GS_OT_render_export(Operator):
             if 'orig_use_compositing' in state:
                 try:
                     scene.render.use_compositing = state['orig_use_compositing']
+                except Exception:
+                    pass
+            if 'orig_compositor_device' in state:
+                try:
+                    scene.render.compositor_device = state['orig_compositor_device']
                 except Exception:
                     pass
             for attr, val in state.get('passes', []):
