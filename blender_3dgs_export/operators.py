@@ -596,10 +596,8 @@ class GS_OT_render_export(Operator):
                 'transform_matrix': [[float(v) for v in row] for row in cam.matrix_world],
                 'w': w, 'h': h, 'fl_x': fx, 'fl_y': fy, 'cx': cx, 'cy': cy})
             self.cam_records.append({
-                # The File Output node may append a frame suffix — resolve by glob later.
-                'depth_glob': (os.path.join(self.out, "depths", stem + "_*.exr")
+                'depth_path': (os.path.join(self.out, "depths", stem + ".exr")
                                if self.want_depth else None),
-                'depth_path': None,
                 'image_path': os.path.join(self.images_dir, image_name),
                 'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'R': R_np, 't': t_np})
 
@@ -630,7 +628,7 @@ class GS_OT_render_export(Operator):
         if not self.pass_state:
             return
         for fo in self.pass_state.get('fouts', []):
-            fo['node'].file_name = stem + "_"
+            fo['node'].file_name = stem      # writes <subdir>/<stem>.exr
 
     # render handlers (bound methods; receive (scene, depsgraph) on modern Blender)
     def _on_render_pre(self, *args):
@@ -941,20 +939,24 @@ class GS_OT_render_export(Operator):
                 item = fo.file_output_items.new(stype, key)
                 if stype == 'VECTOR':
                     item.vector_socket_dimensions = 3
+                # The node-level format is locked to OPEN_EXR_MULTILAYER; set a
+                # per-item format override to write a separate single-layer EXR.
+                item.override_node_format = True
+                item.format.file_format = 'OPEN_EXR'
+                item.format.color_depth = '32'
             except Exception as exc:                       # noqa: BLE001
                 self.report({'WARNING'}, "Could not add '%s' output (%s); skipped" % (key, exc))
-                tree.nodes.remove(fo)
+                try:
+                    tree.nodes.remove(fo)
+                except Exception:
+                    pass
                 continue
             if len(fo.inputs) == 0:
                 self.report({'WARNING'}, "Could not create '%s' output socket; skipped" % key)
                 tree.nodes.remove(fo)
                 continue
-            try:
-                fo.format.file_format = 'OPEN_EXR'   # now valid (>=1 item); separate EXR per view
-                fo.format.color_depth = '32'
-            except Exception:
-                pass
-            tree.links.new(sock, fo.inputs[len(fo.inputs) - 1])
+            # Link to inputs[0] — the item socket. inputs[-1] is the virtual "add" slot.
+            tree.links.new(sock, fo.inputs[0])
             state['created'].append(fo)
             state['fouts'].append({'node': fo, 'subdir': sub, 'key': key})
         return state
@@ -1005,10 +1007,10 @@ class GS_OT_render_export(Operator):
             return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.uint8)
 
         if mode == 'DEPTH':
-            for rec in cam_records:                       # resolve actual depth EXR files
-                g = rec.get('depth_glob')
-                if g:
-                    matches = glob.glob(g)
+            for rec in cam_records:                       # fall back to glob if exact name differs
+                dp = rec.get('depth_path')
+                if dp and not os.path.exists(dp):
+                    matches = glob.glob(dp[:-4] + "*.exr")
                     rec['depth_path'] = matches[0] if matches else None
             xyz, rgb = pointcloud.points_from_depth(cam_records, n)
             if len(xyz) > 0:

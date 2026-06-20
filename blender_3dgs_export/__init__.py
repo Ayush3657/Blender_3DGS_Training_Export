@@ -8,7 +8,7 @@ export camera poses + an initial point cloud in COLMAP format, ready to train
 bl_info = {
     "name": "3DGS Training Export (COLMAP)",
     "author": "ASBL",
-    "version": (1, 9, 3),
+    "version": (1, 9, 4),
     "blender": (3, 3, 0),
     "location": "View3D > Sidebar (N) > 3DGS Export",
     "description": "Render cameras and export a COLMAP dataset for Gaussian Splatting training",
