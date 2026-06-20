@@ -137,6 +137,15 @@ class GS_ExportSettings(PropertyGroup):
         default=False,
     )
 
+    write_seed_ply: BoolProperty(
+        name="Surface-Aligned Seed Cloud",
+        description="Also write seed_points.ply with per-point surface NORMALS "
+                    "(position + normal + colour). Foundation for normal-aware "
+                    "initialization / depth-normal supervision in a custom trainer. "
+                    "Surface point-cloud mode only",
+        default=False,
+    )
+
     write_transforms_json: BoolProperty(
         name="Also Write transforms.json",
         description="Additionally export a NeRF / Nerfstudio / instant-ngp transforms.json "

@@ -252,6 +252,16 @@ and run it.
 These maps are **opt-in and independent** of the point-cloud and COLMAP options —
 the existing scan-style export is unchanged when they're off.
 
+### Surface-aligned seed cloud (`seed_points.ply`)
+
+With **Point Cloud ▸ Surface-Aligned Seed Cloud** on (Surface mode), the same
+sampled points are also written to `seed_points.ply` with per-point **surface
+normals** (position + normal + colour, binary PLY, rotated to match the dataset's
+Up Axis). This is the data foundation for **normal-aware initialization** and
+depth/normal-supervised training in a custom trainer. Note: stock COLMAP/3DGS
+loaders (incl. LichtFeld) initialize from positions + colour only and **ignore
+the normals** — so this file is for the custom-trainer path, not stock training.
+
 ## transforms.json (Nerfstudio / instant-ngp / NeRF)
 
 With **Also Write transforms.json** enabled, a `transforms.json` is written at the

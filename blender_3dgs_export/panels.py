@@ -64,6 +64,8 @@ class GS_PT_pointcloud(GS_PT_base, Panel):
         if props.pc_mode == 'DEPTH':
             layout.label(text="Experimental: renders a depth pass", icon='ERROR')
         layout.prop(props, "write_ply")
+        if props.pc_mode == 'SURFACE':
+            layout.prop(props, "write_seed_ply")
 
 
 class GS_PT_output(GS_PT_base, Panel):

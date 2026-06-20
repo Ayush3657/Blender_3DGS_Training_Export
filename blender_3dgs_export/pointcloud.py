@@ -48,12 +48,16 @@ def _empty():
 # --------------------------------------------------------------------------- #
 # Mesh-surface sampling
 # --------------------------------------------------------------------------- #
-def sample_surface(context, n_points, objects, rng=None, bounds=None):
+def sample_surface(context, n_points, objects, rng=None, bounds=None, return_normals=False):
     """Area-weighted surface sampling across the given mesh objects.
 
     If `bounds` (lo, hi) is given, only triangles whose centroid falls inside the
     box are sampled (and any stray sampled point outside the box is dropped), so
     far/huge geometry elsewhere in the scene can't dominate the cloud.
+
+    If `return_normals` is True, returns (xyz, rgb, normals) with per-point
+    world-space surface normals (face normals via the inverse-transpose normal
+    matrix); otherwise returns (xyz, rgb).
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -63,7 +67,7 @@ def sample_surface(context, n_points, objects, rng=None, bounds=None):
         lo = np.asarray(bounds[0], dtype=np.float64)
         hi = np.asarray(bounds[1], dtype=np.float64)
 
-    v0_list, v1_list, v2_list, col_list = [], [], [], []
+    v0_list, v1_list, v2_list, col_list, nrm_list = [], [], [], [], []
 
     for obj in objects:
         obj_eval = obj.evaluated_get(deps)
@@ -113,6 +117,21 @@ def sample_surface(context, n_points, objects, rng=None, bounds=None):
             mat_idx = np.clip(mat_idx, 0, len(cols) - 1)
             tcol = cols[mat_idx]
 
+            tnrm = None
+            if return_normals:
+                tn = np.empty(nt * 3, dtype=np.float64)
+                me.loop_triangles.foreach_get('normal', tn)
+                tn = tn.reshape(-1, 3)
+                # World-space normals use the inverse-transpose of the 3x3 (handles
+                # non-uniform scale); fall back to the plain 3x3 if singular.
+                try:
+                    nmat = np.linalg.inv(M[:3, :3]).T
+                except np.linalg.LinAlgError:
+                    nmat = M[:3, :3]
+                tnrm = tn @ nmat.T
+                norms = np.linalg.norm(tnrm, axis=1, keepdims=True)
+                tnrm = tnrm / np.where(norms == 0, 1.0, norms)
+
             # Keep only triangles whose centroid is inside the camera region.
             if lo is not None:
                 cent = (t0 + t1 + t2) / 3.0
@@ -120,26 +139,33 @@ def sample_surface(context, n_points, objects, rng=None, bounds=None):
                 if not m.any():
                     continue
                 t0, t1, t2, tcol = t0[m], t1[m], t2[m], tcol[m]
+                if tnrm is not None:
+                    tnrm = tnrm[m]
 
             v0_list.append(t0)
             v1_list.append(t1)
             v2_list.append(t2)
             col_list.append(tcol)
+            if return_normals:
+                nrm_list.append(tnrm)
         finally:
             obj_eval.to_mesh_clear()
 
     if not v0_list:
-        return _empty()
+        return (np.zeros((0, 3)), np.zeros((0, 3), np.uint8), np.zeros((0, 3))) \
+            if return_normals else _empty()
 
     v0 = np.concatenate(v0_list)
     v1 = np.concatenate(v1_list)
     v2 = np.concatenate(v2_list)
     tri_col = np.concatenate(col_list)
+    tri_nrm = np.concatenate(nrm_list) if return_normals else None
 
     areas = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
     total = areas.sum()
     if total <= 0 or n_points <= 0:
-        return _empty()
+        return (np.zeros((0, 3)), np.zeros((0, 3), np.uint8), np.zeros((0, 3))) \
+            if return_normals else _empty()
 
     probs = areas / total
     idx = rng.choice(len(areas), size=int(n_points), p=probs)
@@ -153,13 +179,18 @@ def sample_surface(context, n_points, objects, rng=None, bounds=None):
     b2 = (su1 * u2)[:, None]
     pts = b0 * v0[idx] + b1 * v1[idx] + b2 * v2[idx]
     col = tri_col[idx]
+    nrm = tri_nrm[idx] if return_normals else None
 
     # Drop any stray samples outside the region (e.g. from huge straddling tris).
     if lo is not None:
         m = np.all((pts >= lo) & (pts <= hi), axis=1)
         pts, col = pts[m], col[m]
+        if nrm is not None:
+            nrm = nrm[m]
 
     rgb = (_lin2srgb(col) * 255.0).round().clip(0, 255).astype(np.uint8)
+    if return_normals:
+        return pts, rgb, nrm
     return pts, rgb
 
 

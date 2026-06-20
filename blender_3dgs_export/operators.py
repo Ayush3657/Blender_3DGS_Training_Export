@@ -704,15 +704,17 @@ class GS_OT_render_export(Operator):
         images = self.images_out[:rendered]
         frames = self.frames_out[:rendered]
         records = self.cam_records[:rendered]
-        xyz, rgb = self._build_point_cloud(context, self.props, records)
+        xyz, rgb, nrm = self._build_point_cloud(context, self.props, records)
         print("[3DGS] Point cloud: %d points (%s)" % (len(xyz), self.props.pc_mode))
 
-        # Up-axis conversion: rotate points + camera poses together (sampling and
-        # bounds were done in Blender's Z-up frame; this only reorients the output).
+        # Up-axis conversion: rotate points + normals + camera poses together
+        # (sampling/bounds were done in Blender's Z-up frame; this only reorients).
         R_up = camera_utils.up_axis_matrix(self.props.up_axis)
         if R_up is not None:
             if len(xyz):
                 xyz = np.asarray(xyz, dtype=np.float64) @ R_up.T
+            if nrm is not None and len(nrm):
+                nrm = np.asarray(nrm, dtype=np.float64) @ R_up.T
             for im, rec in zip(images, records):
                 Rp, tp = camera_utils.rotate_world_to_cam(rec['R'], rec['t'], R_up)
                 im['qvec'] = camera_utils.matrix_to_qvec(Rp)
@@ -729,6 +731,10 @@ class GS_OT_render_export(Operator):
                               fmt=self.props.colmap_format)
         if self.props.write_ply:
             colmap_io.write_points_ply(os.path.join(self.sparse_dir, "points3D.ply"), xyz, rgb)
+        if self.props.write_seed_ply and nrm is not None and len(xyz):
+            colmap_io.write_points_ply_oriented(os.path.join(self.out, "seed_points.ply"),
+                                                xyz, nrm, rgb)
+            print("[3DGS] Wrote surface-aligned seed cloud (%d oriented points)" % len(xyz))
         if self.props.write_transforms_json and frames:
             ply_ref = "sparse/0/points3D.ply" if self.props.write_ply else None
             transforms_io.write_transforms(os.path.join(self.out, "transforms.json"),
@@ -1000,11 +1006,14 @@ class GS_OT_render_export(Operator):
                     pass
 
     # --- point cloud dispatch -----------------------------------------------
+    # Returns (xyz, rgb, normals); normals is a numpy array for SURFACE mode
+    # (used by the surface-aligned seed-cloud export) and None otherwise.
     def _build_point_cloud(self, context, props, cam_records):
+        empty = (np.zeros((0, 3)), np.zeros((0, 3), dtype=np.uint8), None)
         mode = props.pc_mode
         n = props.pc_num_points
         if mode == 'NONE':
-            return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.uint8)
+            return empty
 
         if mode == 'DEPTH':
             for rec in cam_records:                       # fall back to glob if exact name differs
@@ -1014,7 +1023,7 @@ class GS_OT_render_export(Operator):
                     rec['depth_path'] = matches[0] if matches else None
             xyz, rgb = pointcloud.points_from_depth(cam_records, n)
             if len(xyz) > 0:
-                return xyz, rgb
+                return xyz, rgb, None
             self.report({'WARNING'}, "Depth back-projection produced no points; "
                                      "falling back to surface sampling")
             mode = 'SURFACE'
@@ -1028,14 +1037,16 @@ class GS_OT_render_export(Operator):
 
         objs = self._mesh_objects(context, props)
         if mode == 'SURFACE':
-            xyz, rgb = pointcloud.sample_surface(context, n, objs, bounds=bounds)
+            xyz, rgb, nrm = pointcloud.sample_surface(context, n, objs, bounds=bounds,
+                                                      return_normals=True)
             if len(xyz) > 0:
-                return xyz, rgb
+                return xyz, rgb, nrm
             self.report({'WARNING'}, "No mesh surfaces in the camera region; using random points")
             mode = 'RANDOM'
         if mode == 'RANDOM':
-            return pointcloud.sample_random(context, n, objs, bounds=bounds)
-        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.uint8)
+            xyz, rgb = pointcloud.sample_random(context, n, objs, bounds=bounds)
+            return xyz, rgb, None
+        return empty
 
     def _mesh_objects(self, context, props):
         if props.pc_source == 'SELECTED':

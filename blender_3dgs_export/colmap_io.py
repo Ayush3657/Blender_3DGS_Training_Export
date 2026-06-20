@@ -184,3 +184,35 @@ def write_points_ply(path, xyz, rgb):
     with open(path, 'wb') as f:
         f.write(header)
         f.write(rec.tobytes())
+
+
+_PLY_ORIENTED_DTYPE = np.dtype([
+    ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
+    ('nx', '<f4'), ('ny', '<f4'), ('nz', '<f4'),
+    ('r', 'u1'), ('g', 'u1'), ('b', 'u1'),
+])
+
+
+def write_points_ply_oriented(path, xyz, nrm, rgb):
+    """Surface-aligned seed cloud: position + normal + color per point."""
+    xyz = np.asarray(xyz, dtype=np.float32)
+    nrm = np.asarray(nrm, dtype=np.float32)
+    rgb = np.asarray(rgb, dtype=np.uint8)
+    n = len(xyz)
+    rec = np.zeros(n, dtype=_PLY_ORIENTED_DTYPE)
+    if n:
+        rec['x'] = xyz[:, 0]; rec['y'] = xyz[:, 1]; rec['z'] = xyz[:, 2]
+        rec['nx'] = nrm[:, 0]; rec['ny'] = nrm[:, 1]; rec['nz'] = nrm[:, 2]
+        rec['r'] = rgb[:, 0]; rec['g'] = rgb[:, 1]; rec['b'] = rgb[:, 2]
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\nproperty float y\nproperty float z\n"
+        "property float nx\nproperty float ny\nproperty float nz\n"
+        "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        "end_header\n"
+    ).encode('ascii')
+    with open(path, 'wb') as f:
+        f.write(header)
+        f.write(rec.tobytes())
