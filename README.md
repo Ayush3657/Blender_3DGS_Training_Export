@@ -262,6 +262,33 @@ depth/normal-supervised training in a custom trainer. Note: stock COLMAP/3DGS
 loaders (incl. LichtFeld) initialize from positions + colour only and **ignore
 the normals** — so this file is for the custom-trainer path, not stock training.
 
+## Depth-fusion init: `scripts/fuse_depth_init.py` (recommended)
+
+Once you have `images/` + `depths/` (GT depth maps) + a COLMAP model, this
+standalone script (no Blender needed) builds a far better initial point cloud
+than surface sampling: it back-projects every depth map and colors each point
+with the **rendered, lit** pixel from the beauty image — so the initial splats
+already *look like the scene*, and the trainer only refines.
+
+```bash
+pip install numpy OpenEXR Pillow
+python scripts/fuse_depth_init.py --data <dataset_root> --points 2000000
+```
+
+It replaces `sparse/0/points3D.{bin,txt,ply}` in place (originals backed up to
+`*.bak` on first run) and stays in the model's coordinate frame, so poses and
+points remain consistent by construction. Only *visible* surfaces get points
+(view-driven), silhouette pixels are filtered (`--edge-thresh`), and a voxel
+grid (`--voxel`, auto by default) evens out density to hit the target count.
+Reads Blender's layered depth EXRs (`depth.V`) directly — no conversion needed.
+
+Then just drag the same dataset folder into LichtFeld Studio and train. If you
+trained this dataset before, note the script also refreshes `points3D.ply`,
+which some trainers cache from earlier runs.
+
+Verified by `tests/test_fusion.py`: synthetic-scene points land on the true
+surface to ~3e-7 and colors map back to the correct pixels.
+
 ## transforms.json (Nerfstudio / instant-ngp / NeRF)
 
 With **Also Write transforms.json** enabled, a `transforms.json` is written at the
